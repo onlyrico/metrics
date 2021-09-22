@@ -20,18 +20,22 @@ import torch
 from sklearn.metrics import precision_score, recall_score
 from torch import Tensor, tensor
 
-from tests.classification.inputs import _input_binary, _input_binary_prob
+from tests.classification.inputs import _input_binary, _input_binary_logits, _input_binary_prob
 from tests.classification.inputs import _input_multiclass as _input_mcls
+from tests.classification.inputs import _input_multiclass_logits as _input_mcls_logits
 from tests.classification.inputs import _input_multiclass_prob as _input_mcls_prob
+from tests.classification.inputs import _input_multiclass_with_missing_class as _input_miss_class
 from tests.classification.inputs import _input_multidim_multiclass as _input_mdmc
 from tests.classification.inputs import _input_multidim_multiclass_prob as _input_mdmc_prob
 from tests.classification.inputs import _input_multilabel as _input_mlb
+from tests.classification.inputs import _input_multilabel_logits as _input_mlb_logits
 from tests.classification.inputs import _input_multilabel_prob as _input_mlb_prob
 from tests.helpers import seed_all
-from tests.helpers.testers import NUM_CLASSES, THRESHOLD, MetricTester
+from tests.helpers.testers import NUM_BATCHES, NUM_CLASSES, THRESHOLD, MetricTester
 from torchmetrics import Metric, Precision, Recall
 from torchmetrics.functional import precision, precision_recall, recall
 from torchmetrics.utilities.checks import _input_format_classification
+from torchmetrics.utilities.enums import AverageMethod
 
 seed_all(42)
 
@@ -74,7 +78,7 @@ def _sk_prec_recall_multidim_multiclass(
         target = torch.transpose(target, 1, 2).reshape(-1, target.shape[1])
 
         return _sk_prec_recall(preds, target, sk_fn, num_classes, average, False, ignore_index)
-    elif mdmc_average == "samplewise":
+    if mdmc_average == "samplewise":
         scores = []
 
         for i in range(preds.shape[0]):
@@ -129,9 +133,9 @@ def test_wrong_params(metric, fn_metric, average, mdmc_average, num_classes, ign
 
 @pytest.mark.parametrize("metric_class, metric_fn", [(Recall, recall), (Precision, precision)])
 def test_zero_division(metric_class, metric_fn):
-    """ Test that zero_division works correctly (currently should just set to 0). """
+    """Test that zero_division works correctly (currently should just set to 0)."""
 
-    preds = tensor([1, 2, 1, 1])
+    preds = tensor([0, 2, 1, 1])
     target = tensor([2, 1, 2, 1])
 
     cl_metric = metric_class(average="none", num_classes=3)
@@ -145,7 +149,8 @@ def test_zero_division(metric_class, metric_fn):
 
 @pytest.mark.parametrize("metric_class, metric_fn", [(Recall, recall), (Precision, precision)])
 def test_no_support(metric_class, metric_fn):
-    """This tests a rare edge case, where there is only one class present
+    """This tests a rare edge case, where there is only one class present.
+
     in target, and ignore_index is set to exactly that class - and the
     average method is equal to 'weighted'.
 
@@ -175,28 +180,38 @@ def test_no_support(metric_class, metric_fn):
 @pytest.mark.parametrize(
     "preds, target, num_classes, multiclass, mdmc_average, sk_wrapper",
     [
+        (_input_binary_logits.preds, _input_binary_logits.target, 1, None, None, _sk_prec_recall),
         (_input_binary_prob.preds, _input_binary_prob.target, 1, None, None, _sk_prec_recall),
         (_input_binary.preds, _input_binary.target, 1, False, None, _sk_prec_recall),
+        (_input_mlb_logits.preds, _input_mlb_logits.target, NUM_CLASSES, None, None, _sk_prec_recall),
         (_input_mlb_prob.preds, _input_mlb_prob.target, NUM_CLASSES, None, None, _sk_prec_recall),
         (_input_mlb.preds, _input_mlb.target, NUM_CLASSES, False, None, _sk_prec_recall),
+        (_input_mcls_logits.preds, _input_mcls_logits.target, NUM_CLASSES, None, None, _sk_prec_recall),
         (_input_mcls_prob.preds, _input_mcls_prob.target, NUM_CLASSES, None, None, _sk_prec_recall),
         (_input_mcls.preds, _input_mcls.target, NUM_CLASSES, None, None, _sk_prec_recall),
         (_input_mdmc.preds, _input_mdmc.target, NUM_CLASSES, None, "global", _sk_prec_recall_multidim_multiclass),
         (
-            _input_mdmc_prob.preds, _input_mdmc_prob.target, NUM_CLASSES, None, "global",
-            _sk_prec_recall_multidim_multiclass
+            _input_mdmc_prob.preds,
+            _input_mdmc_prob.target,
+            NUM_CLASSES,
+            None,
+            "global",
+            _sk_prec_recall_multidim_multiclass,
         ),
         (_input_mdmc.preds, _input_mdmc.target, NUM_CLASSES, None, "samplewise", _sk_prec_recall_multidim_multiclass),
         (
-            _input_mdmc_prob.preds, _input_mdmc_prob.target, NUM_CLASSES, None, "samplewise",
-            _sk_prec_recall_multidim_multiclass
+            _input_mdmc_prob.preds,
+            _input_mdmc_prob.target,
+            NUM_CLASSES,
+            None,
+            "samplewise",
+            _sk_prec_recall_multidim_multiclass,
         ),
     ],
 )
 class TestPrecisionRecall(MetricTester):
-
     @pytest.mark.parametrize("ddp", [False, True])
-    @pytest.mark.parametrize("dist_sync_on_step", [True, False])
+    @pytest.mark.parametrize("dist_sync_on_step", [False])
     def test_precision_recall_class(
         self,
         ddp: bool,
@@ -297,13 +312,52 @@ class TestPrecisionRecall(MetricTester):
             },
         )
 
+    def test_precision_recall_differentiability(
+        self,
+        preds: Tensor,
+        target: Tensor,
+        sk_wrapper: Callable,
+        metric_class: Metric,
+        metric_fn: Callable,
+        sk_fn: Callable,
+        multiclass: Optional[bool],
+        num_classes: Optional[int],
+        average: str,
+        mdmc_average: Optional[str],
+        ignore_index: Optional[int],
+    ):
+        # todo: `metric_class` is unused
+        if num_classes == 1 and average != "micro":
+            pytest.skip("Only test binary data for 'micro' avg (equivalent of 'binary' in sklearn)")
+
+        if ignore_index is not None and preds.ndim == 2:
+            pytest.skip("Skipping ignore_index test with binary inputs.")
+
+        if average == "weighted" and ignore_index is not None and mdmc_average is not None:
+            pytest.skip("Ignore special case where we are ignoring entire sample for 'weighted' average")
+
+        self.run_differentiability_test(
+            preds=preds,
+            target=target,
+            metric_module=metric_class,
+            metric_functional=metric_fn,
+            metric_args={
+                "num_classes": num_classes,
+                "average": average,
+                "threshold": THRESHOLD,
+                "multiclass": multiclass,
+                "ignore_index": ignore_index,
+                "mdmc_average": mdmc_average,
+            },
+        )
+
 
 @pytest.mark.parametrize("average", ["micro", "macro", None, "weighted", "samples"])
 def test_precision_recall_joint(average):
     """A simple test of the joint precision_recall metric.
 
-    No need to test this thorougly, as it is just a combination of precision and recall,
-    which are already tested thoroughly.
+    No need to test this thorougly, as it is just a combination of precision and recall, which are already tested
+    thoroughly.
     """
 
     precision_result = precision(
@@ -362,3 +416,46 @@ def test_top_k(
 
     assert torch.equal(class_metric.compute(), result)
     assert torch.equal(metric_fn(preds, target, top_k=k, average=average, num_classes=3), result)
+
+
+@pytest.mark.parametrize("metric_class, metric_fn", [(Precision, precision), (Recall, recall)])
+@pytest.mark.parametrize(
+    "ignore_index, expected", [(None, torch.tensor([1.0, np.nan])), (0, torch.tensor([np.nan, np.nan]))]
+)
+def test_class_not_present(metric_class, metric_fn, ignore_index, expected):
+    """This tests that when metric is computed per class and a given class is not present in both the `preds` and
+    `target`, the resulting score is `nan`."""
+    preds = torch.tensor([0, 0, 0])
+    target = torch.tensor([0, 0, 0])
+    num_classes = 2
+
+    # test functional
+    result_fn = metric_fn(preds, target, average=AverageMethod.NONE, num_classes=num_classes, ignore_index=ignore_index)
+    assert torch.allclose(expected, result_fn, equal_nan=True)
+
+    # test class
+    cl_metric = metric_class(average=AverageMethod.NONE, num_classes=num_classes, ignore_index=ignore_index)
+    cl_metric(preds, target)
+    result_cl = cl_metric.compute()
+    assert torch.allclose(expected, result_cl, equal_nan=True)
+
+
+@pytest.mark.parametrize("average", ["micro", "macro", "weighted"])
+@pytest.mark.parametrize(
+    "metric_class, metric_functional, sk_fn", [(Precision, precision, precision_score), (Recall, recall, recall_score)]
+)
+def test_same_input(metric_class, metric_functional, sk_fn, average):
+    preds = _input_miss_class.preds
+    target = _input_miss_class.target
+    preds_flat = torch.cat(list(preds), dim=0)
+    target_flat = torch.cat(list(target), dim=0)
+
+    mc = metric_class(num_classes=NUM_CLASSES, average=average)
+    for i in range(NUM_BATCHES):
+        mc.update(preds[i], target[i])
+    class_res = mc.compute()
+    func_res = metric_functional(preds_flat, target_flat, num_classes=NUM_CLASSES, average=average)
+    sk_res = sk_fn(target_flat, preds_flat, average=average, zero_division=1)
+
+    assert torch.allclose(class_res, torch.tensor(sk_res).float())
+    assert torch.allclose(func_res, torch.tensor(sk_res).float())

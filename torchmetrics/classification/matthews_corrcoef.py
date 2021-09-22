@@ -25,8 +25,7 @@ from torchmetrics.metric import Metric
 
 class MatthewsCorrcoef(Metric):
     r"""
-    Calculates `Matthews correlation coefficient
-    <https://en.wikipedia.org/wiki/Matthews_correlation_coefficient>`_ that measures
+    Calculates `Matthews correlation coefficient`_ that measures
     the general correlation or quality of a classification. In the binary case it
     is defined as:
 
@@ -74,6 +73,7 @@ class MatthewsCorrcoef(Metric):
         tensor(0.5774)
 
     """
+    confmat: Tensor
 
     def __init__(
         self,
@@ -83,8 +83,7 @@ class MatthewsCorrcoef(Metric):
         dist_sync_on_step: bool = False,
         process_group: Optional[Any] = None,
         dist_sync_fn: Callable = None,
-    ):
-
+    ) -> None:
         super().__init__(
             compute_on_step=compute_on_step,
             dist_sync_on_step=dist_sync_on_step,
@@ -96,9 +95,8 @@ class MatthewsCorrcoef(Metric):
 
         self.add_state("confmat", default=torch.zeros(num_classes, num_classes), dist_reduce_fx="sum")
 
-    def update(self, preds: Tensor, target: Tensor):
-        """
-        Update state with predictions and targets.
+    def update(self, preds: Tensor, target: Tensor) -> None:  # type: ignore
+        """Update state with predictions and targets.
 
         Args:
             preds: Predictions from model
@@ -108,7 +106,9 @@ class MatthewsCorrcoef(Metric):
         self.confmat += confmat
 
     def compute(self) -> Tensor:
-        """
-        Computes matthews correlation coefficient
-        """
+        """Computes matthews correlation coefficient."""
         return _matthews_corrcoef_compute(self.confmat)
+
+    @property
+    def is_differentiable(self) -> bool:
+        return False

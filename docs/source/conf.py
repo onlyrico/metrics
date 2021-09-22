@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #
 # Configuration file for the Sphinx documentation builder.
 #
@@ -12,7 +11,6 @@
 # add these directories to sys.path here. If the directory is relative to the
 # documentation root, use os.path.abspath to make it absolute, like shown here.
 
-# import m2r
 import glob
 import inspect
 import os
@@ -26,20 +24,15 @@ _PATH_HERE = os.path.abspath(os.path.dirname(__file__))
 _PATH_ROOT = os.path.realpath(os.path.join(_PATH_HERE, "..", ".."))
 sys.path.insert(0, os.path.abspath(_PATH_ROOT))
 
-FOLDER_GENERATED = 'generated'
+FOLDER_GENERATED = "generated"
 SPHINX_MOCK_REQUIREMENTS = int(os.environ.get("SPHINX_MOCK_REQUIREMENTS", True))
 
-try:
-    from torchmetrics import __about__ as about
-except ImportError:
-    # alternative https://stackoverflow.com/a/67692/4521646
-    spec = spec_from_file_location(
-        "torchmetrics/__about__.py", os.path.join(_PATH_ROOT, "torchmetrics", "__about__.py")
-    )
-    about = module_from_spec(spec)
-    spec.loader.exec_module(about)
+# alternative https://stackoverflow.com/a/67692/4521646
+spec = spec_from_file_location("torchmetrics/__about__.py", os.path.join(_PATH_ROOT, "torchmetrics", "__about__.py"))
+about = module_from_spec(spec)
+spec.loader.exec_module(about)
 
-html_favicon = '_static/images/icon.svg'
+html_favicon = "_static/images/icon.svg"
 
 # -- Project information -----------------------------------------------------
 
@@ -62,43 +55,41 @@ github_repo = "metrics"
 
 
 def _transform_changelog(path_in: str, path_out: str) -> None:
-    with open(path_in, 'r') as fp:
+    with open(path_in) as fp:
         chlog_lines = fp.readlines()
     # enrich short subsub-titles to be unique
-    chlog_ver = ''
+    chlog_ver = ""
     for i, ln in enumerate(chlog_lines):
-        if ln.startswith('## '):
-            chlog_ver = ln[2:].split('-')[0].strip()
-        elif ln.startswith('### '):
-            ln = ln.replace('###', f'### {chlog_ver} -')
+        if ln.startswith("## "):
+            chlog_ver = ln[2:].split("-")[0].strip()
+        elif ln.startswith("### "):
+            ln = ln.replace("###", f"### {chlog_ver} -")
             chlog_lines[i] = ln
-    with open(path_out, 'w') as fp:
+    with open(path_out, "w") as fp:
         fp.writelines(chlog_lines)
 
 
 os.makedirs(os.path.join(_PATH_HERE, FOLDER_GENERATED), exist_ok=True)
 # copy all documents from GH templates like contribution guide
-for md in glob.glob(os.path.join(_PATH_ROOT, '.github', '*.md')):
+for md in glob.glob(os.path.join(_PATH_ROOT, ".github", "*.md")):
     shutil.copy(md, os.path.join(_PATH_HERE, FOLDER_GENERATED, os.path.basename(md)))
 # copy also the changelog
 _transform_changelog(
-    os.path.join(_PATH_ROOT, 'CHANGELOG.md'),
-    os.path.join(_PATH_HERE, FOLDER_GENERATED, 'CHANGELOG.md'),
+    os.path.join(_PATH_ROOT, "CHANGELOG.md"),
+    os.path.join(_PATH_HERE, FOLDER_GENERATED, "CHANGELOG.md"),
 )
 
 # -- General configuration ---------------------------------------------------
 
 # If your documentation needs a minimal Sphinx version, state it here.
 
-needs_sphinx = "3.4"
+needs_sphinx = "4.0"
 
 # Add any Sphinx extension module names here, as strings. They can be
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
 extensions = [
     "sphinx.ext.autodoc",
-    # 'sphinxcontrib.mockautodoc',  # raises error: directive 'automodule' is already registered ...
-    # 'sphinxcontrib.fulltoc',  # breaks pytorch-theme with unexpected kw argument 'titles_only'
     "sphinx.ext.doctest",
     "sphinx.ext.intersphinx",
     "sphinx.ext.todo",
@@ -107,9 +98,8 @@ extensions = [
     "sphinx.ext.autosummary",
     "sphinx.ext.napoleon",
     "sphinx.ext.imgmath",
-    "recommonmark",
+    "myst_parser",
     "sphinx.ext.autosectionlabel",
-    # 'm2r',
     "nbsphinx",
     "sphinx_autodoc_typehints",
     "sphinx_paramlinks",
@@ -127,11 +117,10 @@ nbsphinx_execute = "never"
 nbsphinx_allow_errors = True
 nbsphinx_requirejs_path = ""
 
+myst_update_mathjax = False
+
 # The suffix(es) of source filenames.
 # You can specify multiple suffix as a list of string:
-#
-# source_suffix = ['.rst', '.md']
-# source_suffix = ['.rst', '.md', '.ipynb']
 source_suffix = {
     ".rst": "restructuredtext",
     ".txt": "markdown",
@@ -163,7 +152,7 @@ pygments_style = None
 
 # The theme to use for HTML and HTML Help pages.  See the documentation for
 # a list of builtin themes.
-#
+
 html_theme = "pt_lightning_sphinx_theme"
 html_theme_path = [pt_lightning_sphinx_theme.get_html_theme_path()]
 
@@ -172,29 +161,19 @@ html_theme_path = [pt_lightning_sphinx_theme.get_html_theme_path()]
 # documentation.
 
 html_theme_options = {
-    'pytorch_project': 'https://pytorchlightning.ai',
-    'canonical_url': about.__docs_url__,
+    "pytorch_project": "https://pytorchlightning.ai",
+    "canonical_url": about.__docs_url__,
     "collapse_navigation": False,
     "display_version": True,
     "logo_only": False,
 }
 
-html_logo = '_static/images/logo.svg'
+html_logo = "_static/images/logo.svg"
 
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
 html_static_path = ["_static"]
-
-# Custom sidebar templates, must be a dictionary that maps document names
-# to template names.
-#
-# The default sidebars (for documents that don't match any pattern) are
-# defined by theme itself.  Builtin themes are using these templates by
-# default: ``['localtoc.html', 'relations.html', 'sourcelink.html',
-# 'searchbox.html']``.
-#
-# html_sidebars = {}
 
 # -- Options for HTMLHelp output ---------------------------------------------
 
@@ -289,30 +268,11 @@ PACKAGES = [
     about.__name__,
 ]
 
-# def run_apidoc(_):
-#     apidoc_output_folder = os.path.join(_PATH_HERE, "api")
-#     sys.path.insert(0, apidoc_output_folder)
-#
-#     # delete api-doc files before generating them
-#     if os.path.exists(apidoc_output_folder):
-#         shutil.rmtree(apidoc_output_folder)
-#
-#     for pkg in PACKAGES:
-#         argv = ['-e',
-#                 '-o', apidoc_output_folder,
-#                 os.path.join(_PATH_ROOT, pkg),
-#                 '**/test_*',
-#                 '--force',
-#                 '--private',
-#                 '--module-first']
-#
-#         apidoc.main(argv)
-
 
 def setup(app):
     # this is for hiding doctest decoration,
     # see: http://z4r.github.io/python/2011/12/02/hides-the-prompts-and-output/
-    app.add_javascript("copybutton.js")
+    app.add_js_file("copybutton.js")
     # app.connect('builder-inited', run_apidoc)
 
 
@@ -329,10 +289,10 @@ for path_ipynb in glob.glob(os.path.join(_PATH_ROOT, "notebooks", "*.ipynb")):
 # https://stackoverflow.com/questions/15889621/sphinx-how-to-exclude-imports-in-automodule
 def package_list_from_file(file):
     mocked_packages = []
-    with open(file, "r") as fp:
+    with open(file) as fp:
         for ln in fp.readlines():
             found = [ln.index(ch) for ch in list(",=<>#") if ch in ln]
-            pkg = ln[:min(found)] if found else ln
+            pkg = ln[: min(found)] if found else ln
             if pkg.rstrip():
                 mocked_packages.append(pkg.rstrip())
     return mocked_packages
@@ -355,7 +315,6 @@ autodoc_mock_imports = MOCK_PACKAGES
 # Resolve function
 # This function is used to populate the (source) links in the API
 def linkcode_resolve(domain, info):
-
     def find_source():
         # try to find the file and line number, based on code from numpy:
         # https://github.com/numpy/numpy/blob/master/doc/source/conf.py#L286
@@ -364,7 +323,7 @@ def linkcode_resolve(domain, info):
             obj = getattr(obj, part)
         fname = inspect.getsourcefile(obj)
         # https://github.com/rtfd/readthedocs.org/issues/5735
-        if any([s in fname for s in ("readthedocs", "rtfd", "checkouts")]):
+        if any(s in fname for s in ("readthedocs", "rtfd", "checkouts")):
             # /home/docs/checkouts/readthedocs.org/user_builds/pytorch_lightning/checkouts/
             #  devel/pytorch_lightning/utilities/cls_experiment.py#L26-L176
             path_top = os.path.abspath(os.path.join("..", "..", ".."))
@@ -388,20 +347,20 @@ def linkcode_resolve(domain, info):
     # do mapping from latest tags to master
     branch = {"latest": "master", "stable": "master"}.get(branch, branch)
     filename = "/".join([branch] + filename.split("/")[1:])
-    return "https://github.com/%s/%s/blob/%s" % (github_user, github_repo, filename)
+    return f"https://github.com/{github_user}/{github_repo}/blob/{filename}"
 
 
 autosummary_generate = True
 
-autodoc_member_order = 'groupwise'
+autodoc_member_order = "groupwise"
 
-autoclass_content = 'both'
+autoclass_content = "both"
 
 autodoc_default_options = {
-    'members': True,
+    "members": True,
     # 'methods': True,
-    'special-members': '__call__',
-    'exclude-members': '_abc_impl',
+    "special-members": "__call__",
+    "exclude-members": "_abc_impl",
     # 'show-inheritance': True,
 }
 
@@ -410,7 +369,8 @@ autodoc_default_options = {
 # This value determines the text for the permalink; it defaults to "¶". Set it to None or the empty
 #  string to disable permalinks.
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#confval-html_add_permalinks
-html_add_permalinks = "¶"
+html_permalinks = True
+html_permalinks_icon = "¶"
 
 # True to prefix each section label with the name of the document it is in, followed by a colon.
 #  For example, index:Introduction for a section called Introduction that appears in document index.rst.

@@ -11,25 +11,24 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Optional, Tuple
-from warnings import warn
+from typing import List, Optional, Tuple, Union
 
 import torch
 from torch import Tensor, tensor
 
 from torchmetrics.utilities.checks import _input_format_classification
+from torchmetrics.utilities.enums import AverageMethod, MDMCAverageMethod
 
 
-def _del_column(tensor: Tensor, index: int):
-    """ Delete the column at index."""
-
-    return torch.cat([tensor[:, :index], tensor[:, (index + 1):]], 1)
+def _del_column(data: Tensor, idx: int) -> Tensor:
+    """Delete the column at index."""
+    return torch.cat([data[:, :idx], data[:, (idx + 1) :]], 1)
 
 
 def _stat_scores(
     preds: Tensor,
     target: Tensor,
-    reduce: str = "micro",
+    reduce: Optional[str] = "micro",
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
     """Calculate the number of tp, fp, tn, fn.
 
@@ -56,12 +55,11 @@ def _stat_scores(
         - If ``reduce='macro'``, the returned tensors are ``(N,C)`` tensors
         - If ``reduce='samples'``, the returned tensors are ``(N,X)`` tensors
     """
+    dim: Union[int, List[int]] = 1  # for "samples"
     if reduce == "micro":
         dim = [0, 1] if preds.ndim == 2 else [1, 2]
     elif reduce == "macro":
         dim = 0 if preds.ndim == 2 else 2
-    elif reduce == "samples":
-        dim = 1
 
     true_pred, false_pred = target == preds, target != preds
     pos_pred, neg_pred = preds == 1, preds == 0
@@ -78,21 +76,38 @@ def _stat_scores(
 def _stat_scores_update(
     preds: Tensor,
     target: Tensor,
-    reduce: str = "micro",
+    reduce: Optional[str] = "micro",
     mdmc_reduce: Optional[str] = None,
     num_classes: Optional[int] = None,
     top_k: Optional[int] = None,
     threshold: float = 0.5,
     multiclass: Optional[bool] = None,
     ignore_index: Optional[int] = None,
-    is_multiclass: Optional[bool] = None,  # todo: deprecated, remove in v0.4
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
-    if is_multiclass is not None and multiclass is None:
-        warn(
-            "Argument `is_multiclass` was deprecated in v0.3.0 and will be removed in v0.4. Use `multiclass`.",
-            DeprecationWarning
-        )
-        multiclass = is_multiclass
+    """Updates and returns the the number of true positives, false positives, true negatives, false negatives.
+    Raises ValueError if:
+
+        - The `ignore_index` is not valid
+        - When `ignore_index` is used with binary data
+        - When inputs are multi-dimensional multi-class, and the `mdmc_reduce` parameter is not set
+
+    Args:
+        preds: Predicted tensor
+        target: Ground truth tensor
+        reduce: Defines the reduction that is applied
+        mdmc_reduce: Defines how the multi-dimensional multi-class inputs are handeled
+        num_classes: Number of classes. Necessary for (multi-dimensional) multi-class or multi-label data.
+        top_k: Number of highest probability or logit score predictions considered to find the correct label,
+            relevant only for (multi-dimensional) multi-class inputs
+        threshold: Threshold for transforming probability or logit predictions to binary (0,1) predictions, in the case
+            of binary or multi-label inputs. Default value of 0.5 corresponds to input being probabilities
+        multiclass: Used only in certain special cases, where you want to treat inputs as a different type
+            than what they appear to be
+        ignore_index: Specify a class (label) to ignore. If given, this class index does not contribute
+            to the returned score, regardless of reduction method. If an index is ignored, and
+            ``reduce='macro'``, the class statistics for the ignored class will all be returned
+            as ``-1``.
+    """
 
     preds, target, _ = _input_format_classification(
         preds, target, threshold=threshold, num_classes=num_classes, multiclass=multiclass, top_k=top_k
@@ -131,18 +146,95 @@ def _stat_scores_update(
 
 
 def _stat_scores_compute(tp: Tensor, fp: Tensor, tn: Tensor, fn: Tensor) -> Tensor:
+    """Computes the number of true positives, false positives, true negatives, false negatives. Concatenates the
+    input tensors along with the support into one output.
 
-    outputs = [
+    Args:
+        tp: True positives
+        fp: False positives
+        tn: True negatives
+        fn: False negatives
+
+    Example:
+        >>> preds  = torch.tensor([1, 0, 2, 1])
+        >>> target = torch.tensor([1, 1, 2, 0])
+        >>> tp, fp, tn, fn = _stat_scores_update(preds, target, reduce='macro', num_classes=3)
+        >>> _stat_scores_compute(tp, fp, tn, fn)
+        tensor([[0, 1, 2, 1, 1],
+                [1, 1, 1, 1, 2],
+                [1, 0, 3, 0, 1]])
+        >>> tp, fp, tn, fn = _stat_scores_update(preds, target, reduce='micro')
+        >>> _stat_scores_compute(tp, fp, tn, fn)
+        tensor([2, 2, 6, 2, 4])
+    """
+    stats = [
         tp.unsqueeze(-1),
         fp.unsqueeze(-1),
         tn.unsqueeze(-1),
         fn.unsqueeze(-1),
         tp.unsqueeze(-1) + fn.unsqueeze(-1),  # support
     ]
-    outputs = torch.cat(outputs, -1)
+    outputs: Tensor = torch.cat(stats, -1)
     outputs = torch.where(outputs < 0, tensor(-1, device=outputs.device), outputs)
 
     return outputs
+
+
+def _reduce_stat_scores(
+    numerator: Tensor,
+    denominator: Tensor,
+    weights: Optional[Tensor],
+    average: Optional[str],
+    mdmc_average: Optional[str],
+    zero_division: int = 0,
+) -> Tensor:
+    """Reduces scores of type ``numerator/denominator`` or.
+
+    ``weights * (numerator/denominator)``, if ``average='weighted'``.
+
+    Args:
+        numerator: A tensor with numerator numbers.
+        denominator: A tensor with denominator numbers. If a denominator is
+            negative, the class will be ignored (if averaging), or its score
+            will be returned as ``nan`` (if ``average=None``).
+            If the denominator is zero, then ``zero_division`` score will be
+            used for those elements.
+        weights: A tensor of weights to be used if ``average='weighted'``.
+        average: The method to average the scores
+        mdmc_average: The method to average the scores if inputs were multi-dimensional multi-class (MDMC)
+        zero_division: The value to use for the score if denominator equals zero.
+    """
+    numerator, denominator = numerator.float(), denominator.float()
+    zero_div_mask = denominator == 0
+    ignore_mask = denominator < 0
+
+    if weights is None:
+        weights = torch.ones_like(denominator)
+    else:
+        weights = weights.float()
+
+    numerator = torch.where(zero_div_mask, tensor(float(zero_division), device=numerator.device), numerator)
+    denominator = torch.where(zero_div_mask | ignore_mask, tensor(1.0, device=denominator.device), denominator)
+    weights = torch.where(ignore_mask, tensor(0.0, device=weights.device), weights)
+
+    if average not in (AverageMethod.MICRO, AverageMethod.NONE, None):
+        weights = weights / weights.sum(dim=-1, keepdim=True)
+
+    scores = weights * (numerator / denominator)
+
+    # This is in case where sum(weights) = 0, which happens if we ignore the only present class with average='weighted'
+    scores = torch.where(torch.isnan(scores), tensor(float(zero_division), device=scores.device), scores)
+
+    if mdmc_average == MDMCAverageMethod.SAMPLEWISE:
+        scores = scores.mean(dim=0)
+        ignore_mask = ignore_mask.sum(dim=0).bool()
+
+    if average in (AverageMethod.NONE, None):
+        scores = torch.where(ignore_mask, tensor(float("nan"), device=scores.device), scores)
+    else:
+        scores = scores.sum()
+
+    return scores
 
 
 def stat_scores(
@@ -155,30 +247,28 @@ def stat_scores(
     threshold: float = 0.5,
     multiclass: Optional[bool] = None,
     ignore_index: Optional[int] = None,
-    is_multiclass: Optional[bool] = None,  # todo: deprecated, remove in v0.4
 ) -> Tensor:
-    """Computes the number of true positives, false positives, true negatives, false negatives.
-    Related to `Type I and Type II errors <https://en.wikipedia.org/wiki/Type_I_and_type_II_errors>`__
-    and the `confusion matrix <https://en.wikipedia.org/wiki/Confusion_matrix#Table_of_confusion>`__.
+    r"""Computes the number of true positives, false positives, true negatives, false negatives.
+    Related to `Type I and Type II errors`_
+    and the `confusion matrix`_.
 
     The reduction method (how the statistics are aggregated) is controlled by the
     ``reduce`` parameter, and additionally by the ``mdmc_reduce`` parameter in the
     multi-dimensional multi-class case. Accepts all inputs listed in :ref:`references/modules:input types`.
 
     Args:
-        preds: Predictions from model (probabilities or labels)
+        preds: Predictions from model (probabilities, logits or labels)
         target: Ground truth values
         threshold:
-            Threshold probability value for transforming probability predictions to binary
-            (0 or 1) predictions, in the case of binary or multi-label inputs.
+            Threshold for transforming probability or logit predictions to binary (0,1) predictions, in the case
+            of binary or multi-label inputs. Default value of 0.5 corresponds to input being probabilities.
 
         top_k:
-            Number of highest probability entries for each sample to convert to 1s - relevant
-            only for inputs with probability predictions. If this parameter is set for multi-label
-            inputs, it will take precedence over ``threshold``. For (multi-dim) multi-class inputs,
-            this parameter defaults to 1.
+            Number of highest probability or logit score predictions considered to find the correct label,
+            relevant only for (multi-dimensional) multi-class inputs. The
+            default value (``None``) will be interpreted as 1 for these inputs.
 
-            Should be left unset (``None``) for inputs with label predictions.
+            Should be left at default (``None``) for all other types of inputs.
 
         reduce:
             Defines the reduction that is applied. Should be one of the following:
@@ -279,14 +369,8 @@ def stat_scores(
                 [1, 0, 3, 0, 1]])
         >>> stat_scores(preds, target, reduce='micro')
         tensor([2, 2, 6, 2, 4])
-    """
-    if is_multiclass is not None and multiclass is None:
-        warn(
-            "Argument `is_multiclass` was deprecated in v0.3.0 and will be removed in v0.4. Use `multiclass`.",
-            DeprecationWarning
-        )
-        multiclass = is_multiclass
 
+    """
     if reduce not in ["micro", "macro", "samples"]:
         raise ValueError(f"The `reduce` {reduce} is not valid.")
 

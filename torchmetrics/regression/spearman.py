@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Any, Callable, Optional
+from typing import Any, Callable, List, Optional
 
 import torch
 from torch import Tensor
@@ -19,12 +19,12 @@ from torch import Tensor
 from torchmetrics.functional.regression.spearman import _spearman_corrcoef_compute, _spearman_corrcoef_update
 from torchmetrics.metric import Metric
 from torchmetrics.utilities import rank_zero_warn
+from torchmetrics.utilities.data import dim_zero_cat
 
 
 class SpearmanCorrcoef(Metric):
     r"""
-    Computes `spearmans rank correlation coefficient
-    <https://en.wikipedia.org/wiki/Spearman%27s_rank_correlation_coefficient>`_.
+    Computes `spearmans rank correlation coefficient`_.
 
     .. math:
         r_s = = \frac{cov(rg_x, rg_y)}{\sigma_{rg_x} * \sigma_{rg_y}}
@@ -51,7 +51,10 @@ class SpearmanCorrcoef(Metric):
         >>> spearman = SpearmanCorrcoef()
         >>> spearman(preds, target)
         tensor(1.0000)
+
     """
+    preds: List[Tensor]
+    target: List[Tensor]
 
     def __init__(
         self,
@@ -59,7 +62,7 @@ class SpearmanCorrcoef(Metric):
         dist_sync_on_step: bool = False,
         process_group: Optional[Any] = None,
         dist_sync_fn: Optional[Callable] = None,
-    ):
+    ) -> None:
         super().__init__(
             compute_on_step=compute_on_step,
             dist_sync_on_step=dist_sync_on_step,
@@ -67,16 +70,15 @@ class SpearmanCorrcoef(Metric):
             dist_sync_fn=dist_sync_fn,
         )
         rank_zero_warn(
-            'Metric `SpearmanCorrcoef` will save all targets and predictions in the buffer.'
-            ' For large datasets, this may lead to large memory footprint.'
+            "Metric `SpearmanCorrcoef` will save all targets and predictions in the buffer."
+            " For large datasets, this may lead to large memory footprint."
         )
 
-        self.add_state("preds", default=[], dist_reduce_fx=None)
-        self.add_state("target", default=[], dist_reduce_fx=None)
+        self.add_state("preds", default=[], dist_reduce_fx="cat")
+        self.add_state("target", default=[], dist_reduce_fx="cat")
 
-    def update(self, preds: Tensor, target: Tensor):
-        """
-        Update state with predictions and targets.
+    def update(self, preds: Tensor, target: Tensor) -> None:  # type: ignore
+        """Update state with predictions and targets.
 
         Args:
             preds: Predictions from model
@@ -86,10 +88,12 @@ class SpearmanCorrcoef(Metric):
         self.preds.append(preds)
         self.target.append(target)
 
-    def compute(self):
-        """
-        Computes spearmans correlation coefficient
-        """
-        preds = torch.cat(self.preds, dim=0)
-        target = torch.cat(self.target, dim=0)
+    def compute(self) -> Tensor:
+        """Computes spearmans correlation coefficient."""
+        preds = dim_zero_cat(self.preds)
+        target = dim_zero_cat(self.target)
         return _spearman_corrcoef_compute(preds, target)
+
+    @property
+    def is_differentiable(self) -> bool:
+        return False

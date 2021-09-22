@@ -33,11 +33,11 @@ seed_all(42)
 
 
 def _reciprocal_rank(target: np.ndarray, preds: np.ndarray):
-    """
-    Adaptation of `sklearn.metrics.label_ranking_average_precision_score`.
-    Since the original sklearn metric works as RR only when the number of positive
-    targets is exactly 1, here we remove every positive target that is not the most
-    important. Remember that in RR only the positive target with the highest score is considered.
+    """Adaptation of `sklearn.metrics.label_ranking_average_precision_score`.
+
+    Since the original sklearn metric works as RR only when the number of positive targets is exactly 1, here we remove
+    every positive target that is not the most important. Remember that in RR only the positive target with the highest
+    score is considered.
     """
     assert target.shape == preds.shape
     assert len(target.shape) == 1  # works only with single dimension inputs
@@ -50,15 +50,13 @@ def _reciprocal_rank(target: np.ndarray, preds: np.ndarray):
     if target.sum() > 0:
         # sklearn `label_ranking_average_precision_score` requires at most 2 dims
         return label_ranking_average_precision_score(np.expand_dims(target, axis=0), np.expand_dims(preds, axis=0))
-    else:
-        return 0.0
+    return 0.0
 
 
 class TestMRR(RetrievalMetricTester):
-
     @pytest.mark.parametrize("ddp", [True, False])
     @pytest.mark.parametrize("dist_sync_on_step", [True, False])
-    @pytest.mark.parametrize("empty_target_action", ['skip', 'neg', 'pos'])
+    @pytest.mark.parametrize("empty_target_action", ["skip", "neg", "pos"])
     @pytest.mark.parametrize(**_default_metric_class_input_arguments)
     def test_class_metric(
         self,
@@ -69,7 +67,7 @@ class TestMRR(RetrievalMetricTester):
         dist_sync_on_step: bool,
         empty_target_action: str,
     ):
-        metric_args = {'empty_target_action': empty_target_action}
+        metric_args = {"empty_target_action": empty_target_action}
 
         self.run_class_metric_test(
             ddp=ddp,

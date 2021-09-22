@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Sequence, Union
 
 import torch
 from torch import Tensor, tensor
@@ -25,8 +25,7 @@ from torchmetrics.metric import Metric
 
 class ExplainedVariance(Metric):
     r"""
-    Computes `explained variance
-    <https://en.wikipedia.org/wiki/Explained_variation>`_:
+    Computes `explained variance`_:
 
     .. math:: \text{ExplainedVariance} = 1 - \frac{\text{Var}(y - \hat{y})}{\text{Var}(y)}
 
@@ -76,7 +75,13 @@ class ExplainedVariance(Metric):
         >>> explained_variance = ExplainedVariance(multioutput='raw_values')
         >>> explained_variance(preds, target)
         tensor([0.9677, 1.0000])
+
     """
+    n_obs: Tensor
+    sum_error: Tensor
+    sum_squared_error: Tensor
+    sum_target: Tensor
+    sum_squared_target: Tensor
 
     def __init__(
         self,
@@ -85,7 +90,7 @@ class ExplainedVariance(Metric):
         dist_sync_on_step: bool = False,
         process_group: Optional[Any] = None,
         dist_sync_fn: Callable = None,
-    ):
+    ) -> None:
         super().__init__(
             compute_on_step=compute_on_step,
             dist_sync_on_step=dist_sync_on_step,
@@ -97,16 +102,15 @@ class ExplainedVariance(Metric):
             raise ValueError(
                 f"Invalid input to argument `multioutput`. Choose one of the following: {allowed_multioutput}"
             )
-        self.multioutput = multioutput
+        self.multioutput: str = multioutput
         self.add_state("sum_error", default=tensor(0.0), dist_reduce_fx="sum")
         self.add_state("sum_squared_error", default=tensor(0.0), dist_reduce_fx="sum")
         self.add_state("sum_target", default=tensor(0.0), dist_reduce_fx="sum")
         self.add_state("sum_squared_target", default=tensor(0.0), dist_reduce_fx="sum")
         self.add_state("n_obs", default=tensor(0.0), dist_reduce_fx="sum")
 
-    def update(self, preds: Tensor, target: Tensor):
-        """
-        Update state with predictions and targets.
+    def update(self, preds: Tensor, target: Tensor) -> None:  # type: ignore
+        """Update state with predictions and targets.
 
         Args:
             preds: Predictions from model
@@ -119,10 +123,8 @@ class ExplainedVariance(Metric):
         self.sum_target = self.sum_target + sum_target
         self.sum_squared_target = self.sum_squared_target + sum_squared_target
 
-    def compute(self):
-        """
-        Computes explained variance over state.
-        """
+    def compute(self) -> Union[Tensor, Sequence[Tensor]]:
+        """Computes explained variance over state."""
         return _explained_variance_compute(
             self.n_obs,
             self.sum_error,
@@ -131,3 +133,7 @@ class ExplainedVariance(Metric):
             self.sum_squared_target,
             self.multioutput,
         )
+
+    @property
+    def is_differentiable(self) -> bool:
+        return True

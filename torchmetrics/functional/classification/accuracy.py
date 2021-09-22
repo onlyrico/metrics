@@ -13,15 +13,16 @@
 # limitations under the License.
 from typing import Optional, Tuple
 
+import torch
 from torch import Tensor, tensor
 
-from torchmetrics.classification.stat_scores import _reduce_stat_scores
-from torchmetrics.functional.classification.stat_scores import _stat_scores_update
+from torchmetrics.functional.classification.stat_scores import _reduce_stat_scores, _stat_scores_update
 from torchmetrics.utilities.checks import _check_classification_inputs, _input_format_classification, _input_squeeze
-from torchmetrics.utilities.enums import DataType
+from torchmetrics.utilities.enums import AverageMethod, DataType, MDMCAverageMethod
 
 
-def _check_subset_validity(mode):
+def _check_subset_validity(mode: DataType) -> bool:
+    """Checks input mode is valid."""
     return mode in (DataType.MULTILABEL, DataType.MULTIDIM_MULTICLASS)
 
 
@@ -33,6 +34,27 @@ def _mode(
     num_classes: Optional[int],
     multiclass: Optional[bool],
 ) -> DataType:
+    """Finds the mode of the input tensors.
+
+    Args:
+        preds: Predicted tensor
+        target: Ground truth tensor
+        threshold: Threshold for transforming probability or logit predictions to binary (0,1) predictions, in the
+            case of binary or multi-label inputs. Default value of 0.5 corresponds to input being probabilities.
+        top_k: Number of highest probability or logit score predictions considered to find the correct label,
+            relevant only for (multi-dimensional) multi-class inputs.
+        num_classes: Number of classes. Necessary for ``'macro'``, ``'weighted'`` and ``None`` average methods.
+        multiclass:
+            Used only in certain special cases, where you want to treat inputs as a different type
+            than what they appear to be.
+
+    Example:
+        >>> target = torch.tensor([0, 1, 2, 3])
+        >>> preds = torch.tensor([0, 2, 1, 3])
+        >>> _mode(preds, target, 0.5, None, None, None)
+        <DataType.MULTICLASS: 'multi-class'>
+    """
+
     mode = _check_classification_inputs(
         preds, target, threshold=threshold, top_k=top_k, num_classes=num_classes, multiclass=multiclass
     )
@@ -42,8 +64,8 @@ def _mode(
 def _accuracy_update(
     preds: Tensor,
     target: Tensor,
-    reduce: str,
-    mdmc_reduce: str,
+    reduce: Optional[str],
+    mdmc_reduce: Optional[str],
     threshold: float,
     num_classes: Optional[int],
     top_k: Optional[int],
@@ -51,6 +73,27 @@ def _accuracy_update(
     ignore_index: Optional[int],
     mode: DataType,
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+    """Updates and returns stat scores (true positives, false positives, true negatives, false negatives) required
+    to compute accuracy.
+
+    Args:
+        preds: Predicted tensor
+        target: Ground truth tensor
+        reduce: Defines the reduction that is applied.
+        mdmc_reduce: Defines how the multi-dimensional multi-class inputs are handeled.
+        threshold: Threshold for transforming probability or logit predictions to binary (0,1) predictions, in
+            the case of binary or multi-label inputs.
+        num_classes: Number of classes. Necessary for ``'macro'``, ``'weighted'`` and ``None`` average methods.
+        top_k: Number of highest probability or logit score predictions considered to find the correct label,
+            relevant only for (multi-dimensional) multi-class inputs.
+        multiclass: Used only in certain special cases, where you want to treat inputs as a different type
+            than what they appear to be.
+        ignore_index: Integer specifying a target class to ignore. If given, this class index does not contribute
+            to the returned score, regardless of reduction method. If an index is ignored, and ``average=None``
+            or ``'none'``, the score for the ignored class will be returned as ``nan``.
+        mode: Mode of the input tensors
+    """
+
     if mode == DataType.MULTILABEL and top_k:
         raise ValueError("You can not use the `top_k` parameter to calculate accuracy for multi-label inputs.")
 
@@ -70,19 +113,91 @@ def _accuracy_update(
 
 
 def _accuracy_compute(
-    tp: Tensor, fp: Tensor, tn: Tensor, fn: Tensor, average: str, mdmc_average: str, mode: DataType
+    tp: Tensor,
+    fp: Tensor,
+    tn: Tensor,
+    fn: Tensor,
+    average: Optional[str],
+    mdmc_average: Optional[str],
+    mode: DataType,
 ) -> Tensor:
-    simple_average = ["micro", "samples"]
+    """Computes accuracy from stat scores: true positives, false positives, true negatives, false negatives.
+
+    Args:
+        tp: True positives
+        fp: False positives
+        tn: True negatives
+        fn: False negatives
+        average: Defines the reduction that is applied.
+        mdmc_average: Defines how averaging is done for multi-dimensional multi-class inputs (on top of the
+            ``average`` parameter).
+        mode: Mode of the input tensors
+
+    Example:
+        >>> preds = torch.tensor([0, 2, 1, 3])
+        >>> target = torch.tensor([0, 1, 2, 3])
+        >>> threshold = 0.5
+        >>> reduce = average = 'micro'
+        >>> mdmc_average = 'global'
+        >>> mode = _mode(preds, target, threshold, top_k=None, num_classes=None, multiclass=None)
+        >>> tp, fp, tn, fn = _accuracy_update(
+        ...                     preds,
+        ...                     target,
+        ...                     reduce,
+        ...                     mdmc_average,
+        ...                     threshold=0.5,
+        ...                     num_classes=None,
+        ...                     top_k=None,
+        ...                     multiclass=None,
+        ...                     ignore_index=None,
+        ...                     mode=mode)
+        >>> _accuracy_compute(tp, fp, tn, fn, average, mdmc_average, mode)
+        tensor(0.5000)
+
+        >>> target = torch.tensor([0, 1, 2])
+        >>> preds = torch.tensor([[0.1, 0.9, 0], [0.3, 0.1, 0.6], [0.2, 0.5, 0.3]])
+        >>> top_k, threshold = 2, 0.5
+        >>> reduce = average = 'micro'
+        >>> mdmc_average = 'global'
+        >>> mode = _mode(preds, target, threshold, top_k, num_classes=None, multiclass=None)
+        >>> tp, fp, tn, fn = _accuracy_update(
+        ...                     preds,
+        ...                     target,
+        ...                     reduce,
+        ...                     mdmc_average,
+        ...                     threshold,
+        ...                     num_classes=None,
+        ...                     top_k=top_k,
+        ...                     multiclass=None,
+        ...                     ignore_index=None,
+        ...                     mode=mode)
+        >>> _accuracy_compute(tp, fp, tn, fn, average, mdmc_average, mode)
+        tensor(0.6667)
+    """
+
+    simple_average = [AverageMethod.MICRO, AverageMethod.SAMPLES]
     if (mode == DataType.BINARY and average in simple_average) or mode == DataType.MULTILABEL:
         numerator = tp + tn
         denominator = tp + tn + fp + fn
     else:
         numerator = tp
         denominator = tp + fn
+
+    if average == AverageMethod.MACRO and mdmc_average != MDMCAverageMethod.SAMPLEWISE:
+        cond = tp + fp + fn == 0
+        numerator = numerator[~cond]
+        denominator = denominator[~cond]
+
+    if average == AverageMethod.NONE and mdmc_average != MDMCAverageMethod.SAMPLEWISE:
+        # a class is not present if there exists no TPs, no FPs, and no FNs
+        meaningless_indeces = torch.nonzero((tp | fn | fp) == 0).cpu()
+        numerator[meaningless_indeces, ...] = -1
+        denominator[meaningless_indeces, ...] = -1
+
     return _reduce_stat_scores(
         numerator=numerator,
         denominator=denominator,
-        weights=None if average != "weighted" else tp + fn,
+        weights=None if average != AverageMethod.WEIGHTED else tp + fn,
         average=average,
         mdmc_average=mdmc_average,
     )
@@ -94,6 +209,16 @@ def _subset_accuracy_update(
     threshold: float,
     top_k: Optional[int],
 ) -> Tuple[Tensor, Tensor]:
+    """Updates and returns variables required to compute subset accuracy.
+
+    Args:
+        preds: Predicted tensor
+        target: Ground truth tensor
+        threshold: Threshold for transforming probability or logit predictions to binary (0,1) predictions, in the case
+            of binary or multi-label inputs. Default value of 0.5 corresponds to input being probabilities.
+        top_k: Number of highest probability or logit score predictions considered to find the correct label,
+            relevant only for (multi-dimensional) multi-class inputs.
+    """
 
     preds, target = _input_squeeze(preds, target)
     preds, target, mode = _input_format_classification(preds, target, threshold=threshold, top_k=top_k)
@@ -111,11 +236,20 @@ def _subset_accuracy_update(
         sample_correct = (preds * target).sum(dim=(1, 2))
         correct = (sample_correct == target.shape[2]).sum()
         total = tensor(target.shape[0], device=target.device)
+    else:
+        correct, total = tensor(0), tensor(0)
 
     return correct, total
 
 
 def _subset_accuracy_compute(correct: Tensor, total: Tensor) -> Tensor:
+    """Computes subset accuracy from number of correct observations and total number of observations.
+
+    Args:
+        correct: Number of correct observations
+        total: Number of observations
+    """
+
     return correct.float() / total
 
 
@@ -131,7 +265,7 @@ def accuracy(
     multiclass: Optional[bool] = None,
     ignore_index: Optional[int] = None,
 ) -> Tensor:
-    r"""Computes `Accuracy <https://en.wikipedia.org/wiki/Accuracy_and_precision>`_:
+    r"""Computes `Accuracy`_
 
     .. math::
         \text{Accuracy} = \frac{1}{N}\sum_i^N 1(y_i = \hat{y}_i)
@@ -139,9 +273,9 @@ def accuracy(
     Where :math:`y` is a tensor of target values, and :math:`\hat{y}` is a
     tensor of predictions.
 
-    For multi-class and multi-dimensional multi-class data with probability predictions, the
+    For multi-class and multi-dimensional multi-class data with probability or logits predictions, the
     parameter ``top_k`` generalizes this metric to a Top-K accuracy metric: for each sample the
-    top-K highest probability items are considered to find the correct label.
+    top-K highest probability or logits items are considered to find the correct label.
 
     For multi-label and multi-dimensional multi-class inputs, this metric computes the "global"
     accuracy by default, which counts all labels or sub-samples separately. This can be
@@ -151,7 +285,7 @@ def accuracy(
     Accepts all input types listed in :ref:`references/modules:input types`.
 
     Args:
-        preds: Predictions from model (probabilities, or labels)
+        preds: Predictions from model (probabilities, logits or labels)
         target: Ground truth labels
         average:
             Defines the reduction that is applied. Should be one of the following:
@@ -168,6 +302,9 @@ def accuracy(
 
             .. note:: What is considered a sample in the multi-dimensional multi-class case
                 depends on the value of ``mdmc_average``.
+
+            .. note:: If ``'none'`` and a given class doesn't occur in the `preds` or `target`,
+                the value for the class will be ``nan``.
 
         mdmc_average:
             Defines how averaging is done for multi-dimensional multi-class inputs (on top of the
@@ -190,11 +327,11 @@ def accuracy(
             Number of classes. Necessary for ``'macro'``, ``'weighted'`` and ``None`` average methods.
 
         threshold:
-            Threshold probability value for transforming probability predictions to binary
-            (0,1) predictions, in the case of binary or multi-label inputs.
+            Threshold for transforming probability or logit predictions to binary (0,1) predictions, in the case
+            of binary or multi-label inputs. Default value of 0.5 corresponds to input being probabilities.
         top_k:
-            Number of highest probability predictions considered to find the correct label, relevant
-            only for (multi-dimensional) multi-class inputs with probability predictions. The
+            Number of highest probability or logit score predictions considered to find the correct label,
+            relevant only for (multi-dimensional) multi-class inputs. The
             default value (``None``) will be interpreted as 1 for these inputs.
 
             Should be left at default (``None``) for all other types of inputs.
@@ -225,8 +362,6 @@ def accuracy(
 
     Raises:
         ValueError:
-            If ``threshold`` is not a ``float`` between ``0`` and ``1``.
-        ValueError:
             If ``top_k`` parameter is set for ``multi-label`` inputs.
         ValueError:
             If ``average`` is none of ``"micro"``, ``"macro"``, ``"weighted"``, ``"samples"``, ``"none"``, ``None``.
@@ -253,10 +388,6 @@ def accuracy(
         >>> accuracy(preds, target, top_k=2)
         tensor(0.6667)
     """
-
-    if not 0 < threshold < 1:
-        raise ValueError(f"The `threshold` should be a float in the (0,1) interval, got {threshold}")
-
     allowed_average = ["micro", "macro", "weighted", "samples", "none", None]
     if average not in allowed_average:
         raise ValueError(f"The `average` has to be one of {allowed_average}, got {average}.")

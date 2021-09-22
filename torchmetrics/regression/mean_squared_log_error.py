@@ -25,9 +25,7 @@ from torchmetrics.metric import Metric
 
 class MeanSquaredLogError(Metric):
     r"""
-    Computes `mean squared logarithmic error
-    <https://scikit-learn.org/stable/modules/model_evaluation.html#mean-squared-log-error>`_
-    (MSLE):
+    Computes `mean squared logarithmic error`_ (MSLE):
 
     .. math:: \text{MSLE} = \frac{1}{N}\sum_i^N (\log_e(1 + y_i) - \log_e(1 + \hat{y_i}))^2
 
@@ -54,6 +52,8 @@ class MeanSquaredLogError(Metric):
         Half precision is only support on GPU for this metric
 
     """
+    sum_squared_log_error: Tensor
+    total: Tensor
 
     def __init__(
         self,
@@ -61,7 +61,7 @@ class MeanSquaredLogError(Metric):
         dist_sync_on_step: bool = False,
         process_group: Optional[Any] = None,
         dist_sync_fn: Callable = None,
-    ):
+    ) -> None:
         super().__init__(
             compute_on_step=compute_on_step,
             dist_sync_on_step=dist_sync_on_step,
@@ -72,9 +72,8 @@ class MeanSquaredLogError(Metric):
         self.add_state("sum_squared_log_error", default=tensor(0.0), dist_reduce_fx="sum")
         self.add_state("total", default=tensor(0), dist_reduce_fx="sum")
 
-    def update(self, preds: Tensor, target: Tensor):
-        """
-        Update state with predictions and targets.
+    def update(self, preds: Tensor, target: Tensor) -> None:  # type: ignore
+        """Update state with predictions and targets.
 
         Args:
             preds: Predictions from model
@@ -85,12 +84,10 @@ class MeanSquaredLogError(Metric):
         self.sum_squared_log_error += sum_squared_log_error
         self.total += n_obs
 
-    def compute(self):
-        """
-        Compute mean squared logarithmic error over state.
-        """
+    def compute(self) -> Tensor:
+        """Compute mean squared logarithmic error over state."""
         return _mean_squared_log_error_compute(self.sum_squared_log_error, self.total)
 
     @property
-    def is_differentiable(self):
+    def is_differentiable(self) -> bool:
         return True

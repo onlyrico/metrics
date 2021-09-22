@@ -12,19 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from typing import Optional
-from warnings import warn
 
 import torch
 from torch import Tensor
 
-from torchmetrics.classification.stat_scores import _reduce_stat_scores
-from torchmetrics.functional.classification.stat_scores import _stat_scores_update
-from torchmetrics.utilities.enums import AverageMethod, MDMCAverageMethod
+from torchmetrics.functional.classification.stat_scores import _reduce_stat_scores, _stat_scores_update
+from torchmetrics.utilities.enums import AverageMethod as AvgMethod
+from torchmetrics.utilities.enums import MDMCAverageMethod
 
 
-def _safe_divide(num: Tensor, denom: Tensor):
-    """ prevent zero division """
-    denom[denom == 0.] = 1
+def _safe_divide(num: Tensor, denom: Tensor) -> Tensor:
+    """prevent zero division."""
+    denom[denom == 0.0] = 1
     return num / denom
 
 
@@ -38,8 +37,34 @@ def _fbeta_compute(
     average: str,
     mdmc_average: Optional[str],
 ) -> Tensor:
+    """Computes f_beta metric from stat scores: true positives, false positives, true negatives, false negatives.
 
-    if average == "micro" and mdmc_average != MDMCAverageMethod.SAMPLEWISE:
+    Args:
+        tp: True positives
+        fp: False positives
+        tn: True negatives
+        fn: False negatives
+        beta: The parameter `beta` (which determines the weight of recall in the combined score)
+        ignore_index: Integer specifying a target class to ignore. If given, this class index does not contribute
+            to the returned score, regardless of reduction method
+        average: Defines the reduction that is applied
+        mdmc_average: Defines how averaging is done for multi-dimensional multi-class inputs (on top of the
+            ``average`` parameter)
+
+    Example:
+        >>> from torchmetrics.functional.classification.stat_scores import _stat_scores_update
+        >>> target = torch.tensor([0, 1, 2, 0, 1, 2])
+        >>> preds = torch.tensor([0, 2, 1, 0, 0, 1])
+        >>> tp, fp, tn, fn = _stat_scores_update(
+        ...                         preds,
+        ...                         target,
+        ...                         reduce='micro',
+        ...                         num_classes=3,
+        ...                     )
+        >>> _fbeta_compute(tp, fp, tn, fn, beta=0.5, ignore_index=None, average='micro', mdmc_average=None)
+        tensor(0.3333)
+    """
+    if average == AvgMethod.MICRO and mdmc_average != MDMCAverageMethod.SAMPLEWISE:
         mask = tp >= 0
         precision = _safe_divide(tp[mask].sum().float(), (tp[mask] + fp[mask]).sum())
         recall = _safe_divide(tp[mask].sum().float(), (tp[mask] + fn[mask]).sum())
@@ -47,25 +72,37 @@ def _fbeta_compute(
         precision = _safe_divide(tp.float(), tp + fp)
         recall = _safe_divide(tp.float(), tp + fn)
 
-    num = (1 + beta**2) * precision * recall
-    denom = beta**2 * precision + recall
-    denom[denom == 0.] = 1  # avoid division by 0
+    num = (1 + beta ** 2) * precision * recall
+    denom = beta ** 2 * precision + recall
+    denom[denom == 0.0] = 1.0  # avoid division by 0
+
+    # if classes matter and a given class is not present in both the preds and the target,
+    # computing the score for this class is meaningless, thus they should be ignored
+    if average == AvgMethod.NONE and mdmc_average != MDMCAverageMethod.SAMPLEWISE:
+        # a class is not present if there exists no TPs, no FPs, and no FNs
+        meaningless_indeces = torch.nonzero((tp | fn | fp) == 0).cpu()
+        if ignore_index is None:
+            ignore_index = meaningless_indeces
+        else:
+            ignore_index = torch.unique(torch.cat((meaningless_indeces, torch.tensor([[ignore_index]]))))
 
     if ignore_index is not None:
-        if (
-            average not in (AverageMethod.MICRO.value, AverageMethod.SAMPLES.value)
-            and mdmc_average == MDMCAverageMethod.SAMPLEWISE  # noqa: W503
-        ):
+        if average not in (AvgMethod.MICRO, AvgMethod.SAMPLES) and mdmc_average == MDMCAverageMethod.SAMPLEWISE:
             num[..., ignore_index] = -1
             denom[..., ignore_index] = -1
-        elif average not in (AverageMethod.MICRO.value, AverageMethod.SAMPLES.value):
+        elif average not in (AvgMethod.MICRO, AvgMethod.SAMPLES):
             num[ignore_index, ...] = -1
             denom[ignore_index, ...] = -1
+
+    if average == AvgMethod.MACRO and mdmc_average != MDMCAverageMethod.SAMPLEWISE:
+        cond = (tp + fp + fn == 0) | (tp + fp + fn == -3)
+        num = num[~cond]
+        denom = denom[~cond]
 
     return _reduce_stat_scores(
         numerator=num,
         denominator=denom,
-        weights=None if average != "weighted" else tp + fn,
+        weights=None if average != AvgMethod.WEIGHTED else tp + fn,
         average=average,
         mdmc_average=mdmc_average,
     )
@@ -82,7 +119,6 @@ def fbeta(
     threshold: float = 0.5,
     top_k: Optional[int] = None,
     multiclass: Optional[bool] = None,
-    is_multiclass: Optional[bool] = None,  # todo: deprecated, remove in v0.4
 ) -> Tensor:
     r"""
     Computes f_beta metric.
@@ -92,11 +128,11 @@ def fbeta(
         {(\beta^2 * \text{precision}) + \text{recall}}
 
     Works with binary, multiclass, and multilabel data.
-    Accepts probabilities from a model output or integer class values in prediction.
+    Accepts probabilities or logits from a model output or integer class values in prediction.
     Works with multi-dimensional preds and target.
 
     If preds and target are the same shape and preds is a float tensor, we use the ``self.threshold`` argument
-    to convert into integer labels. This is the case for binary and multi-label probabilities.
+    to convert into integer labels. This is the case for binary and multi-label logits or probabilities.
 
     If preds has an extra dimension as in the case of multi-class scores we perform an argmax on ``dim=1``.
 
@@ -105,7 +141,7 @@ def fbeta(
     multi-dimensional multi-class case. Accepts all inputs listed in :ref:`references/modules:input types`.
 
     Args:
-        preds: Predictions from model (probabilities or labels)
+        preds: Predictions from model (probabilities, logits or labels)
         target: Ground truth values
         average:
             Defines the reduction that is applied. Should be one of the following:
@@ -122,6 +158,9 @@ def fbeta(
 
             .. note:: What is considered a sample in the multi-dimensional multi-class case
                 depends on the value of ``mdmc_average``.
+
+            .. note:: If ``'none'`` and a given class doesn't occur in the `preds` or `target`,
+                the value for the class will be ``nan``.
 
         mdmc_average:
             Defines how averaging is done for multi-dimensional multi-class inputs (on top of the
@@ -146,13 +185,14 @@ def fbeta(
         num_classes:
             Number of classes. Necessary for ``'macro'``, ``'weighted'`` and ``None`` average methods.
         threshold:
-            Threshold probability value for transforming probability predictions to binary
-            (0,1) predictions, in the case of binary or multi-label inputs.
+            Threshold for transforming probability or logit predictions to binary (0,1) predictions, in the case
+            of binary or multi-label inputs. Default value of 0.5 corresponds to input being probabilities.
         top_k:
-            Number of highest probability entries for each sample to convert to 1s - relevant
-            only for inputs with probability predictions. If this parameter is set for multi-label
-            inputs, it will take precedence over ``threshold``. For (multi-dim) multi-class inputs,
-            this parameter defaults to 1. Should be left unset (``None``) for inputs with label predictions.
+            Number of highest probability or logit score predictions considered to find the correct label,
+            relevant only for (multi-dimensional) multi-class inputs. The
+            default value (``None``) will be interpreted as 1 for these inputs.
+
+            Should be left at default (``None``) for all other types of inputs.
         multiclass:
             Used only in certain special cases, where you want to treat inputs as a different type
             than what they appear to be. See the parameter's
@@ -174,28 +214,20 @@ def fbeta(
         tensor(0.3333)
 
     """
-    if is_multiclass is not None and multiclass is None:
-        warn(
-            "Argument `is_multiclass` was deprecated in v0.3.0 and will be removed in v0.4. Use `multiclass`.",
-            DeprecationWarning
-        )
-        multiclass = is_multiclass
-
-    allowed_average = ["micro", "macro", "weighted", "samples", "none", None]
+    allowed_average = list(AvgMethod)
     if average not in allowed_average:
         raise ValueError(f"The `average` has to be one of {allowed_average}, got {average}.")
 
-    allowed_mdmc_average = [None, "samplewise", "global"]
-    if mdmc_average not in allowed_mdmc_average:
-        raise ValueError(f"The `mdmc_average` has to be one of {allowed_mdmc_average}, got {mdmc_average}.")
+    if mdmc_average is not None and MDMCAverageMethod.from_str(mdmc_average) is None:
+        raise ValueError(f"The `mdmc_average` has to be one of {list(MDMCAverageMethod)}, got {mdmc_average}.")
 
-    if average in ["macro", "weighted", "none", None] and (not num_classes or num_classes < 1):
+    if average in [AvgMethod.MACRO, AvgMethod.WEIGHTED, AvgMethod.NONE] and (not num_classes or num_classes < 1):
         raise ValueError(f"When you set `average` as {average}, you have to provide the number of classes.")
 
     if num_classes and ignore_index is not None and (not 0 <= ignore_index < num_classes or num_classes == 1):
         raise ValueError(f"The `ignore_index` {ignore_index} is not valid for inputs with {num_classes} classes")
 
-    reduce = "macro" if average in ["weighted", "none", None] else average
+    reduce = AvgMethod.MACRO if average in [AvgMethod.WEIGHTED, AvgMethod.NONE] else average
     tp, fp, tn, fn = _stat_scores_update(
         preds,
         target,
@@ -222,18 +254,15 @@ def f1(
     threshold: float = 0.5,
     top_k: Optional[int] = None,
     multiclass: Optional[bool] = None,
-    is_multiclass: Optional[bool] = None,  # todo: deprecated, remove in v0.4
 ) -> Tensor:
-    """
-    Computes F1 metric. F1 metrics correspond to a equally weighted average of the
-    precision and recall scores.
+    """Computes F1 metric. F1 metrics correspond to a equally weighted average of the precision and recall scores.
 
     Works with binary, multiclass, and multilabel data.
-    Accepts probabilities from a model output or integer class values in prediction.
+    Accepts probabilities or logits from a model output or integer class values in prediction.
     Works with multi-dimensional preds and target.
 
     If preds and target are the same shape and preds is a float tensor, we use the ``self.threshold`` argument
-    to convert into integer labels. This is the case for binary and multi-label probabilities.
+    to convert into integer labels. This is the case for binary and multi-label probabilities or logits.
 
     If preds has an extra dimension as in the case of multi-class scores we perform an argmax on ``dim=1``.
 
@@ -242,7 +271,7 @@ def f1(
     multi-dimensional multi-class case. Accepts all inputs listed in :ref:`references/modules:input types`.
 
     Args:
-        preds: Predictions from model (probabilities or labels)
+        preds: Predictions from model (probabilities, logits or labels)
         target: Ground truth values
         average:
             Defines the reduction that is applied. Should be one of the following:
@@ -259,6 +288,9 @@ def f1(
 
             .. note:: What is considered a sample in the multi-dimensional multi-class case
                 depends on the value of ``mdmc_average``.
+
+            .. note:: If ``'none'`` and a given class doesn't occur in the `preds` or `target`,
+                the value for the class will be ``nan``.
 
         mdmc_average:
             Defines how averaging is done for multi-dimensional multi-class inputs (on top of the
@@ -287,15 +319,15 @@ def f1(
             Number of classes. Necessary for ``'macro'``, ``'weighted'`` and ``None`` average methods.
 
         threshold:
-            Threshold probability value for transforming probability predictions to binary
-            (0,1) predictions, in the case of binary or multi-label inputs.
+            Threshold for transforming probability or logit predictions to binary (0,1) predictions, in the case
+            of binary or multi-label inputs. Default value of 0.5 corresponds to input being probabilities.
         top_k:
-            Number of highest probability entries for each sample to convert to 1s - relevant
-            only for inputs with probability predictions. If this parameter is set for multi-label
-            inputs, it will take precedence over ``threshold``. For (multi-dim) multi-class inputs,
-            this parameter defaults to 1.
+            Number of highest probability or logit score predictions considered to find the correct label,
+            relevant only for (multi-dimensional) multi-class inputs. The
+            default value (``None``) will be interpreted as 1 for these inputs.
 
-            Should be left unset (``None``) for inputs with label predictions.
+            Should be left at default (``None``) for all other types of inputs.
+
         multiclass:
             Used only in certain special cases, where you want to treat inputs as a different type
             than what they appear to be. See the parameter's
@@ -316,10 +348,4 @@ def f1(
         >>> f1(preds, target, num_classes=3)
         tensor(0.3333)
     """
-    if is_multiclass is not None and multiclass is None:
-        warn(
-            "Argument `is_multiclass` was deprecated in v0.3.0 and will be removed in v0.4. Use `multiclass`.",
-            DeprecationWarning
-        )
-        multiclass = is_multiclass
     return fbeta(preds, target, 1.0, average, mdmc_average, ignore_index, num_classes, threshold, top_k, multiclass)

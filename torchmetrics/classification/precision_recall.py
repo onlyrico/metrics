@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from typing import Any, Callable, Optional
-from warnings import warn
 
 import torch
 from torch import Tensor
@@ -23,7 +22,7 @@ from torchmetrics.functional.classification.precision_recall import _precision_c
 
 class Precision(StatScores):
     r"""
-    Computes `Precision <https://en.wikipedia.org/wiki/Precision_and_recall>`_:
+    Computes `Precision`_:
 
     .. math:: \text{Precision} = \frac{\text{TP}}{\text{TP} + \text{FP}}
 
@@ -39,8 +38,8 @@ class Precision(StatScores):
         num_classes:
             Number of classes. Necessary for ``'macro'``, ``'weighted'`` and ``None`` average methods.
         threshold:
-            Threshold probability value for transforming probability predictions to binary
-            (0,1) predictions, in the case of binary or multi-label inputs.
+            Threshold for transforming probability or logit predictions to binary (0,1) predictions, in the case
+            of binary or multi-label inputs. Default value of 0.5 corresponds to input being probabilities.
         average:
             Defines the reduction that is applied. Should be one of the following:
 
@@ -81,12 +80,12 @@ class Precision(StatScores):
             or ``'none'``, the score for the ignored class will be returned as ``nan``.
 
         top_k:
-            Number of highest probability entries for each sample to convert to 1s - relevant
-            only for inputs with probability predictions. If this parameter is set for multi-label
-            inputs, it will take precedence over ``threshold``. For (multi-dim) multi-class inputs,
-            this parameter defaults to 1.
+            Number of highest probability or logit score predictions considered to find the correct label,
+            relevant only for (multi-dimensional) multi-class inputs. The
+            default value (``None``) will be interpreted as 1 for these inputs.
 
-            Should be left unset (``None``) for inputs with label predictions.
+            Should be left at default (``None``) for all other types of inputs.
+
         multiclass:
             Used only in certain special cases, where you want to treat inputs as a different type
             than what they appear to be. See the parameter's
@@ -135,15 +134,7 @@ class Precision(StatScores):
         dist_sync_on_step: bool = False,
         process_group: Optional[Any] = None,
         dist_sync_fn: Callable = None,
-        is_multiclass: Optional[bool] = None,  # todo: deprecated, remove in v0.4
-    ):
-        if is_multiclass is not None and multiclass is None:
-            warn(
-                "Argument `is_multiclass` was deprecated in v0.3.0 and will be removed in v0.4. Use `multiclass`.",
-                DeprecationWarning
-            )
-            multiclass = is_multiclass
-
+    ) -> None:
         allowed_average = ["micro", "macro", "weighted", "samples", "none", None]
         if average not in allowed_average:
             raise ValueError(f"The `average` has to be one of {allowed_average}, got {average}.")
@@ -165,8 +156,7 @@ class Precision(StatScores):
         self.average = average
 
     def compute(self) -> Tensor:
-        """
-        Computes the precision score based on inputs passed in to ``update`` previously.
+        """Computes the precision score based on inputs passed in to ``update`` previously.
 
         Return:
             The shape of the returned tensor depends on the ``average`` parameter
@@ -175,13 +165,17 @@ class Precision(StatScores):
             - If ``average in ['none', None]``, the shape will be ``(C,)``, where ``C`` stands  for the number
               of classes
         """
-        tp, fp, tn, fn = self._get_final_stats()
-        return _precision_compute(tp, fp, tn, fn, self.average, self.mdmc_reduce)
+        tp, fp, _, fn = self._get_final_stats()
+        return _precision_compute(tp, fp, fn, self.average, self.mdmc_reduce)
+
+    @property
+    def is_differentiable(self) -> bool:
+        return False
 
 
 class Recall(StatScores):
     r"""
-    Computes `Recall <https://en.wikipedia.org/wiki/Precision_and_recall>`_:
+    Computes `Recall`_:
 
     .. math:: \text{Recall} = \frac{\text{TP}}{\text{TP} + \text{FN}}
 
@@ -197,8 +191,8 @@ class Recall(StatScores):
         num_classes:
             Number of classes. Necessary for ``'macro'``, ``'weighted'`` and ``None`` average methods.
         threshold:
-            Threshold probability value for transforming probability predictions to binary
-            (0,1) predictions, in the case of binary or multi-label inputs.
+            Threshold for transforming probability or logit predictions to binary (0,1) predictions, in the case
+            of binary or multi-label inputs. Default value of 0.5 corresponds to input being probabilities.
         average:
             Defines the reduction that is applied. Should be one of the following:
 
@@ -239,12 +233,11 @@ class Recall(StatScores):
             or ``'none'``, the score for the ignored class will be returned as ``nan``.
 
         top_k:
-            Number of highest probability entries for each sample to convert to 1s - relevant
-            only for inputs with probability predictions. If this parameter is set for multi-label
-            inputs, it will take precedence over ``threshold``. For (multi-dim) multi-class inputs,
-            this parameter defaults to 1.
+            Number of highest probability or logit score predictions considered to find the correct label,
+            relevant only for (multi-dimensional) multi-class. The
+            default value (``None``) will be interpreted as 1 for these inputs.
 
-            Should be left unset (``None``) for inputs with label predictions.
+            Should be left at default (``None``) for all other types of inputs.
 
         multiclass:
             Used only in certain special cases, where you want to treat inputs as a different type
@@ -294,15 +287,7 @@ class Recall(StatScores):
         dist_sync_on_step: bool = False,
         process_group: Optional[Any] = None,
         dist_sync_fn: Callable = None,
-        is_multiclass: Optional[bool] = None,  # todo: deprecated, remove in v0.4
-    ):
-        if is_multiclass is not None and multiclass is None:
-            warn(
-                "Argument `is_multiclass` was deprecated in v0.3.0 and will be removed in v0.4. Use `multiclass`.",
-                DeprecationWarning
-            )
-            multiclass = is_multiclass
-
+    ) -> None:
         allowed_average = ["micro", "macro", "weighted", "samples", "none", None]
         if average not in allowed_average:
             raise ValueError(f"The `average` has to be one of {allowed_average}, got {average}.")
@@ -324,8 +309,7 @@ class Recall(StatScores):
         self.average = average
 
     def compute(self) -> Tensor:
-        """
-        Computes the recall score based on inputs passed in to ``update`` previously.
+        """Computes the recall score based on inputs passed in to ``update`` previously.
 
         Return:
             The shape of the returned tensor depends on the ``average`` parameter
@@ -334,5 +318,9 @@ class Recall(StatScores):
             - If ``average in ['none', None]``, the shape will be ``(C,)``, where ``C`` stands  for the number
               of classes
         """
-        tp, fp, tn, fn = self._get_final_stats()
-        return _recall_compute(tp, fp, tn, fn, self.average, self.mdmc_reduce)
+        tp, fp, _, fn = self._get_final_stats()
+        return _recall_compute(tp, fp, fn, self.average, self.mdmc_reduce)
+
+    @property
+    def is_differentiable(self) -> bool:
+        return False

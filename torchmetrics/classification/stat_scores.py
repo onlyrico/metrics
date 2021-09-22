@@ -12,11 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from typing import Any, Callable, Optional, Tuple
-from warnings import warn
 
-import numpy as np
 import torch
-from torch import Tensor, tensor
+from torch import Tensor
 
 from torchmetrics.functional.classification.stat_scores import _stat_scores_compute, _stat_scores_update
 from torchmetrics.metric import Metric
@@ -24,9 +22,9 @@ from torchmetrics.utilities.enums import AverageMethod, MDMCAverageMethod
 
 
 class StatScores(Metric):
-    """Computes the number of true positives, false positives, true negatives, false negatives.
-    Related to `Type I and Type II errors <https://en.wikipedia.org/wiki/Type_I_and_type_II_errors>`__
-    and the `confusion matrix <https://en.wikipedia.org/wiki/Confusion_matrix#Table_of_confusion>`__.
+    r"""Computes the number of true positives, false positives, true negatives, false negatives.
+    Related to `Type I and Type II errors`_
+    and the `confusion matrix`_.
 
     The reduction method (how the statistics are aggregated) is controlled by the
     ``reduce`` parameter, and additionally by the ``mdmc_reduce`` parameter in the
@@ -36,16 +34,15 @@ class StatScores(Metric):
 
     Args:
         threshold:
-            Threshold probability value for transforming probability predictions to binary
-            (0 or 1) predictions, in the case of binary or multi-label inputs.
+            Threshold for transforming probability or logit predictions to binary (0,1) predictions, in the case
+            of binary or multi-label inputs. Default value of 0.5 corresponds to input being probabilities.
 
         top_k:
-            Number of highest probability entries for each sample to convert to 1s - relevant
-            only for inputs with probability predictions. If this parameter is set for multi-label
-            inputs, it will take precedence over ``threshold``. For (multi-dim) multi-class inputs,
-            this parameter defaults to 1.
+            Number of highest probability or logit score predictions considered to find the correct label,
+            relevant only for (multi-dimensional) multi-class inputs. The
+            default value (``None``) will be interpreted as 1 for these inputs.
 
-            Should be left unset (``None``) for inputs with label predictions.
+            Should be left at default (``None``) for all other types of inputs.
 
         reduce:
             Defines the reduction that is applied. Should be one of the following:
@@ -107,8 +104,6 @@ class StatScores(Metric):
 
     Raises:
         ValueError:
-            If ``threshold`` is not a ``float`` between ``0`` and ``1``.
-        ValueError:
             If ``reduce`` is none of ``"micro"``, ``"macro"`` or ``"samples"``.
         ValueError:
             If ``mdmc_reduce`` is none of ``None``, ``"samplewise"``, ``"global"``.
@@ -133,6 +128,12 @@ class StatScores(Metric):
 
     """
 
+    # TODO: canot be used because if scripting
+    # tp: Union[Tensor, List[Tensor]]
+    # fp: Union[Tensor, List[Tensor]]
+    # tn: Union[Tensor, List[Tensor]]
+    # fn: Union[Tensor, List[Tensor]]
+
     def __init__(
         self,
         threshold: float = 0.5,
@@ -146,15 +147,7 @@ class StatScores(Metric):
         dist_sync_on_step: bool = False,
         process_group: Optional[Any] = None,
         dist_sync_fn: Callable = None,
-        is_multiclass: Optional[bool] = None,  # todo: deprecated, remove in v0.4
-    ):
-        if is_multiclass is not None and multiclass is None:
-            warn(
-                "Argument `is_multiclass` was deprecated in v0.3.0 and will be removed in v0.4. Use `multiclass`.",
-                DeprecationWarning
-            )
-            multiclass = is_multiclass
-
+    ) -> None:
         super().__init__(
             compute_on_step=compute_on_step,
             dist_sync_on_step=dist_sync_on_step,
@@ -170,9 +163,6 @@ class StatScores(Metric):
         self.ignore_index = ignore_index
         self.top_k = top_k
 
-        if not 0 < threshold < 1:
-            raise ValueError(f"The `threshold` should be a float in the (0,1) interval, got {threshold}")
-
         if reduce not in ["micro", "macro", "samples"]:
             raise ValueError(f"The `reduce` {reduce} is not valid.")
 
@@ -185,25 +175,28 @@ class StatScores(Metric):
         if num_classes and ignore_index is not None and (not 0 <= ignore_index < num_classes or num_classes == 1):
             raise ValueError(f"The `ignore_index` {ignore_index} is not valid for inputs with {num_classes} classes")
 
+        default: Callable = lambda: []
+        reduce_fn: Optional[str] = None
         if mdmc_reduce != "samplewise" and reduce != "samples":
             if reduce == "micro":
                 zeros_shape = []
             elif reduce == "macro":
-                zeros_shape = (num_classes, )
-            default, reduce_fn = lambda: torch.zeros(zeros_shape, dtype=torch.long), "sum"
-        else:
-            default, reduce_fn = lambda: [], None
+                zeros_shape = [num_classes]
+            else:
+                raise ValueError(f'Wrong reduce="{reduce}"')
+            default = lambda: torch.zeros(zeros_shape, dtype=torch.long)
+            reduce_fn = "sum"
 
         for s in ("tp", "fp", "tn", "fn"):
             self.add_state(s, default=default(), dist_reduce_fx=reduce_fn)
 
-    def update(self, preds: Tensor, target: Tensor):
-        """
-        Update state with predictions and targets. See :ref:`references/modules:input types` for more information
-        on input types.
+    def update(self, preds: Tensor, target: Tensor) -> None:  # type: ignore
+        """Update state with predictions and targets. See
+        :ref:`references/modules:input types` for more information on input
+        types.
 
         Args:
-            preds: Predictions from model (probabilities or labels)
+            preds: Predictions from model (probabilities, logits or labels)
             target: Ground truth values
         """
 
@@ -220,7 +213,7 @@ class StatScores(Metric):
         )
 
         # Update states
-        if self.reduce != "samples" and self.mdmc_reduce != "samplewise":
+        if self.reduce != AverageMethod.SAMPLES and self.mdmc_reduce != MDMCAverageMethod.SAMPLEWISE:
             self.tp += tp
             self.fp += fp
             self.tn += tn
@@ -232,23 +225,15 @@ class StatScores(Metric):
             self.fn.append(fn)
 
     def _get_final_stats(self) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
-        """Performs concatenation on the stat scores if neccesary,
-        before passing them to a compute function.
-        """
-
-        if isinstance(self.tp, list):
-            tp = torch.cat(self.tp)
-            fp = torch.cat(self.fp)
-            tn = torch.cat(self.tn)
-            fn = torch.cat(self.fn)
-        else:
-            tp, fp, tn, fn = self.tp, self.fp, self.tn, self.fn
-
+        """Performs concatenation on the stat scores if neccesary, before passing them to a compute function."""
+        tp = torch.cat(self.tp) if isinstance(self.tp, list) else self.tp
+        fp = torch.cat(self.fp) if isinstance(self.fp, list) else self.fp
+        tn = torch.cat(self.tn) if isinstance(self.tn, list) else self.tn
+        fn = torch.cat(self.fn) if isinstance(self.fn, list) else self.fn
         return tp, fp, tn, fn
 
     def compute(self) -> Tensor:
-        """
-        Computes the stat scores based on inputs passed in to ``update`` previously.
+        """Computes the stat scores based on inputs passed in to ``update`` previously.
 
         Return:
             The metric returns a tensor of shape ``(..., 5)``, where the last dimension corresponds
@@ -277,73 +262,10 @@ class StatScores(Metric):
               - If ``reduce='micro'``, the shape will be ``(N, 5)``
               - If ``reduce='macro'``, the shape will be ``(N, C, 5)``
               - If ``reduce='samples'``, the shape will be ``(N, X, 5)``
-
         """
         tp, fp, tn, fn = self._get_final_stats()
         return _stat_scores_compute(tp, fp, tn, fn)
 
-
-def _reduce_stat_scores(
-    numerator: Tensor,
-    denominator: Tensor,
-    weights: Optional[Tensor],
-    average: str,
-    mdmc_average: Optional[str],
-    zero_division: int = 0,
-) -> Tensor:
-    """
-    Reduces scores of type ``numerator/denominator`` or
-    ``weights * (numerator/denominator)``, if ``average='weighted'``.
-
-    Args:
-        numerator: A tensor with numerator numbers.
-        denominator: A tensor with denominator numbers. If a denominator is
-            negative, the class will be ignored (if averaging), or its score
-            will be returned as ``nan`` (if ``average=None``).
-            If the denominator is zero, then ``zero_division`` score will be
-            used for those elements.
-        weights:
-            A tensor of weights to be used if ``average='weighted'``.
-        average:
-            The method to average the scores. Should be one of ``'micro'``, ``'macro'``,
-            ``'weighted'``, ``'none'``, ``None`` or ``'samples'``. The behavior
-            corresponds to `sklearn averaging methods <https://scikit-learn.org/stable/modules/\
-model_evaluation.html#multiclass-and-multilabel-classification>`__.
-        mdmc_average:
-            The method to average the scores if inputs were multi-dimensional multi-class (MDMC).
-            Should be either ``'global'`` or ``'samplewise'``. If inputs were not
-            multi-dimensional multi-class, it should be ``None`` (default).
-        zero_division:
-            The value to use for the score if denominator equals zero.
-    """
-    numerator, denominator = numerator.float(), denominator.float()
-    zero_div_mask = denominator == 0
-    ignore_mask = denominator < 0
-
-    if weights is None:
-        weights = torch.ones_like(denominator)
-    else:
-        weights = weights.float()
-
-    numerator = torch.where(zero_div_mask, tensor(float(zero_division), device=numerator.device), numerator)
-    denominator = torch.where(zero_div_mask | ignore_mask, tensor(1.0, device=denominator.device), denominator)
-    weights = torch.where(ignore_mask, tensor(0.0, device=weights.device), weights)
-
-    if average not in (AverageMethod.MICRO, AverageMethod.NONE, None):
-        weights = weights / weights.sum(dim=-1, keepdim=True)
-
-    scores = weights * (numerator / denominator)
-
-    # This is in case where sum(weights) = 0, which happens if we ignore the only present class with average='weighted'
-    scores = torch.where(torch.isnan(scores), tensor(float(zero_division), device=scores.device), scores)
-
-    if mdmc_average == MDMCAverageMethod.SAMPLEWISE:
-        scores = scores.mean(dim=0)
-        ignore_mask = ignore_mask.sum(dim=0).bool()
-
-    if average in (AverageMethod.NONE, None):
-        scores = torch.where(ignore_mask, tensor(np.nan, device=scores.device), scores)
-    else:
-        scores = scores.sum()
-
-    return scores
+    @property
+    def is_differentiable(self) -> bool:
+        return False

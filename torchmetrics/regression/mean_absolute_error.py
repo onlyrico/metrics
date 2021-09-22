@@ -25,7 +25,7 @@ from torchmetrics.metric import Metric
 
 class MeanAbsoluteError(Metric):
     r"""
-    Computes `mean absolute error <https://en.wikipedia.org/wiki/Mean_absolute_error>`_ (MAE):
+    `Computes Mean Absolute Error`_ (MAE):
 
     .. math:: \text{MAE} = \frac{1}{N}\sum_i^N | y_i - \hat{y_i} |
 
@@ -48,6 +48,8 @@ class MeanAbsoluteError(Metric):
         >>> mean_absolute_error(preds, target)
         tensor(0.5000)
     """
+    sum_abs_error: Tensor
+    total: Tensor
 
     def __init__(
         self,
@@ -55,7 +57,7 @@ class MeanAbsoluteError(Metric):
         dist_sync_on_step: bool = False,
         process_group: Optional[Any] = None,
         dist_sync_fn: Callable = None,
-    ):
+    ) -> None:
         super().__init__(
             compute_on_step=compute_on_step,
             dist_sync_on_step=dist_sync_on_step,
@@ -66,9 +68,8 @@ class MeanAbsoluteError(Metric):
         self.add_state("sum_abs_error", default=tensor(0.0), dist_reduce_fx="sum")
         self.add_state("total", default=tensor(0), dist_reduce_fx="sum")
 
-    def update(self, preds: Tensor, target: Tensor):
-        """
-        Update state with predictions and targets.
+    def update(self, preds: Tensor, target: Tensor) -> None:  # type: ignore
+        """Update state with predictions and targets.
 
         Args:
             preds: Predictions from model
@@ -79,12 +80,10 @@ class MeanAbsoluteError(Metric):
         self.sum_abs_error += sum_abs_error
         self.total += n_obs
 
-    def compute(self):
-        """
-        Computes mean absolute error over state.
-        """
+    def compute(self) -> Tensor:
+        """Computes mean absolute error over state."""
         return _mean_absolute_error_compute(self.sum_abs_error, self.total)
 
     @property
-    def is_differentiable(self):
+    def is_differentiable(self) -> bool:
         return True

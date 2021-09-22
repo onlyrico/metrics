@@ -13,7 +13,6 @@
 # limitations under the License.
 from typing import Any, Callable, List, Mapping, Optional, Sequence, Union
 
-import numpy as np
 import torch
 from torch import Tensor, tensor
 
@@ -22,20 +21,23 @@ from torchmetrics.utilities.prints import rank_zero_warn
 METRIC_EPS = 1e-6
 
 
-def dim_zero_cat(x):
+def dim_zero_cat(x: Union[Tensor, List[Tensor]]) -> Tensor:
     x = x if isinstance(x, (list, tuple)) else [x]
+    x = [y.unsqueeze(0) if y.numel() == 1 and y.ndim == 0 else y for y in x]
+    if not x:  # empty list
+        raise ValueError("No samples to concatenate")
     return torch.cat(x, dim=0)
 
 
-def dim_zero_sum(x):
+def dim_zero_sum(x: Tensor) -> Tensor:
     return torch.sum(x, dim=0)
 
 
-def dim_zero_mean(x):
+def dim_zero_mean(x: Tensor) -> Tensor:
     return torch.mean(x, dim=0)
 
 
-def _flatten(x):
+def _flatten(x: Sequence) -> list:
     return [item for sublist in x for item in sublist]
 
 
@@ -43,8 +45,7 @@ def to_onehot(
     label_tensor: Tensor,
     num_classes: Optional[int] = None,
 ) -> Tensor:
-    """
-    Converts a dense label tensor to one-hot format
+    """Converts a dense label tensor to one-hot format.
 
     Args:
         label_tensor: dense label tensor, with shape [N, d1, d2, ...]
@@ -59,7 +60,6 @@ def to_onehot(
         tensor([[0, 1, 0, 0],
                 [0, 0, 1, 0],
                 [0, 0, 0, 1]])
-
     """
     if num_classes is None:
         num_classes = int(label_tensor.max().detach().item() + 1)
@@ -76,8 +76,7 @@ def to_onehot(
 
 
 def select_topk(prob_tensor: Tensor, topk: int = 1, dim: int = 1) -> Tensor:
-    """
-    Convert a probability tensor to binary by selecting top-k highest entries.
+    """Convert a probability tensor to binary by selecting top-k highest entries.
 
     Args:
         prob_tensor: dense tensor of shape ``[..., C, ...]``, where ``C`` is in the
@@ -95,16 +94,18 @@ def select_topk(prob_tensor: Tensor, topk: int = 1, dim: int = 1) -> Tensor:
                 [1, 1, 0]], dtype=torch.int32)
     """
     zeros = torch.zeros_like(prob_tensor)
-    topk_tensor = zeros.scatter(dim, prob_tensor.topk(k=topk, dim=dim).indices, 1.0)
+    if topk == 1:  # argmax has better performance than topk
+        topk_tensor = zeros.scatter(dim, prob_tensor.argmax(dim=dim, keepdim=True), 1.0)
+    else:
+        topk_tensor = zeros.scatter(dim, prob_tensor.topk(k=topk, dim=dim).indices, 1.0)
     return topk_tensor.int()
 
 
-def to_categorical(tensor: Tensor, argmax_dim: int = 1) -> Tensor:
-    """
-    Converts a tensor of probabilities to a dense label tensor
+def to_categorical(x: Tensor, argmax_dim: int = 1) -> Tensor:
+    """Converts a tensor of probabilities to a dense label tensor.
 
     Args:
-        tensor: probabilities to get the categorical label [N, d1, d2, ...]
+        x: probabilities to get the categorical label [N, d1, d2, ...]
         argmax_dim: dimension to apply
 
     Return:
@@ -114,9 +115,8 @@ def to_categorical(tensor: Tensor, argmax_dim: int = 1) -> Tensor:
         >>> x = torch.tensor([[0.2, 0.5], [0.9, 0.1]])
         >>> to_categorical(x)
         tensor([1, 0])
-
     """
-    return torch.argmax(tensor, dim=argmax_dim)
+    return torch.argmax(x, dim=argmax_dim)
 
 
 def get_num_classes(
@@ -124,8 +124,7 @@ def get_num_classes(
     target: Tensor,
     num_classes: Optional[int] = None,
 ) -> int:
-    """
-    Calculates the number of classes for a given prediction and target tensor.
+    """Calculates the number of classes for a given prediction and target tensor.
 
     Args:
         preds: predicted values
@@ -151,45 +150,15 @@ def get_num_classes(
     return num_classes
 
 
-def _stable_1d_sort(x: torch, nb: int = 2049):
-    """
-    Stable sort of 1d tensors. Pytorch defaults to a stable sorting algorithm
-    if number of elements are larger than 2048. This function pads the tensors,
-    makes the sort and returns the sorted array (with the padding removed)
-    See this discussion: https://discuss.pytorch.org/t/is-torch-sort-stable/20714
-
-    Raises:
-        ValueError:
-            If dim of ``x`` is greater than 1 since stable sort works with only 1d tensors.
-
-    Example:
-        >>> data = torch.tensor([8, 7, 2, 6, 4, 5, 3, 1, 9, 0])
-        >>> _stable_1d_sort(data)
-        (tensor([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), tensor([9, 7, 2, 6, 4, 5, 3, 1, 0, 8]))
-        >>> _stable_1d_sort(data, nb=5)
-        (tensor([0, 1, 2, 3, 4]), tensor([9, 7, 2, 6, 4]))
-    """
-    if x.ndim > 1:
-        raise ValueError('Stable sort only works on 1d tensors')
-    n = x.numel()
-    if n < nb:
-        x_max = x.max()
-        x = torch.cat([x, (x_max + 1) * torch.ones(nb - n, dtype=x.dtype, device=x.device)], 0)
-    x_sort = x.sort()
-    i = min(nb, n)
-    return x_sort.values[:i], x_sort.indices[:i]
-
-
 def apply_to_collection(
     data: Any,
     dtype: Union[type, tuple],
     function: Callable,
-    *args,
+    *args: Any,
     wrong_dtype: Optional[Union[type, tuple]] = None,
-    **kwargs,
+    **kwargs: Any,
 ) -> Any:
-    """
-    Recursively applies a function to all elements of a certain dtype.
+    """Recursively applies a function to all elements of a certain dtype.
 
     Args:
         data: the collection to apply the function to
@@ -221,7 +190,7 @@ def apply_to_collection(
     if isinstance(data, Mapping):
         return elem_type({k: apply_to_collection(v, dtype, function, *args, **kwargs) for k, v in data.items()})
 
-    if isinstance(data, tuple) and hasattr(data, '_fields'):  # named tuple
+    if isinstance(data, tuple) and hasattr(data, "_fields"):  # named tuple
         return elem_type(*(apply_to_collection(d, dtype, function, *args, **kwargs) for d in data))
 
     if isinstance(data, Sequence) and not isinstance(data, str):
@@ -231,25 +200,23 @@ def apply_to_collection(
     return data
 
 
-def get_group_indexes(indexes: Union[Tensor, np.ndarray]) -> List[Union[Tensor, np.ndarray]]:
-    """
-    Given an integer `torch.Tensor` or `np.ndarray` `indexes`, return a `torch.Tensor` or `np.ndarray` of indexes for
-    each different value in `indexes`.
+def get_group_indexes(indexes: Tensor) -> List[Tensor]:
+    """Given an integer `torch.Tensor` `indexes`, return a `torch.Tensor` of indexes for each different value in
+    `indexes`.
 
     Args:
-        indexes: a `torch.Tensor` or `np.ndarray` of integers
+        indexes: a `torch.Tensor`
 
     Return:
-        A list of integer `torch.Tensor`s or `np.ndarray`s
+        A list of integer `torch.Tensor`s
 
     Example:
         >>> indexes = torch.tensor([0, 0, 0, 1, 1, 1, 1])
         >>> get_group_indexes(indexes)
         [tensor([0, 1, 2]), tensor([3, 4, 5, 6])]
     """
-    structure, dtype = (tensor, torch.long) if isinstance(indexes, Tensor) else (np.array, np.int64)
 
-    res = dict()
+    res: dict = {}
     for i, _id in enumerate(indexes):
         _id = _id.item()
         if _id in res:
@@ -257,4 +224,4 @@ def get_group_indexes(indexes: Union[Tensor, np.ndarray]) -> List[Union[Tensor, 
         else:
             res[_id] = [i]
 
-    return [structure(x, dtype=dtype) for x in res.values()]
+    return [tensor(x, dtype=torch.long) for x in res.values()]

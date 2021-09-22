@@ -15,7 +15,7 @@ import os
 import pickle
 import sys
 from functools import partial
-from typing import Any, Callable
+from typing import Any, Callable, Dict, Optional, Sequence
 
 import numpy as np
 import pytest
@@ -37,36 +37,68 @@ NUM_CLASSES = 5
 EXTRA_DIM = 3
 THRESHOLD = 0.5
 
+MAX_PORT = 8100
+START_PORT = 8088
+CURRENT_PORT = START_PORT
+
 
 def setup_ddp(rank, world_size):
-    """ Setup ddp environment """
+    """Setup ddp environment."""
+    global CURRENT_PORT
+
     os.environ["MASTER_ADDR"] = "localhost"
-    os.environ["MASTER_PORT"] = "8088"
+    os.environ["MASTER_PORT"] = str(CURRENT_PORT)
+
+    CURRENT_PORT += 1
+    if CURRENT_PORT > MAX_PORT:
+        CURRENT_PORT = START_PORT
 
     if torch.distributed.is_available() and sys.platform not in ("win32", "cygwin"):
         torch.distributed.init_process_group("gloo", rank=rank, world_size=world_size)
 
 
-def _assert_allclose(pl_result, sk_result, atol: float = 1e-8):
-    """Utility function for recursively asserting that two results are within a certain tolerance """
+def _assert_allclose(pl_result: Any, sk_result: Any, atol: float = 1e-8, key: Optional[str] = None) -> None:
+    """Utility function for recursively asserting that two results are within a certain tolerance."""
     # single output compare
     if isinstance(pl_result, Tensor):
-        assert np.allclose(pl_result.cpu().numpy(), sk_result, atol=atol, equal_nan=True)
+        assert np.allclose(pl_result.detach().cpu().numpy(), sk_result, atol=atol, equal_nan=True)
     # multi output compare
-    elif isinstance(pl_result, (tuple, list)):
+    elif isinstance(pl_result, Sequence):
         for pl_res, sk_res in zip(pl_result, sk_result):
             _assert_allclose(pl_res, sk_res, atol=atol)
+    elif isinstance(pl_result, Dict):
+        if key is None:
+            raise KeyError("Provide Key for Dict based metric results.")
+        assert np.allclose(pl_result[key].detach().cpu().numpy(), sk_result, atol=atol, equal_nan=True)
     else:
         raise ValueError("Unknown format for comparison")
 
 
-def _assert_tensor(pl_result):
-    """ Utility function for recursively checking that some input only consists of torch tensors """
-    if isinstance(pl_result, (list, tuple)):
+def _assert_tensor(pl_result: Any, key: Optional[str] = None) -> None:
+    """Utility function for recursively checking that some input only consists of torch tensors."""
+    if isinstance(pl_result, Sequence):
         for plr in pl_result:
             _assert_tensor(plr)
+    elif isinstance(pl_result, Dict):
+        if key is None:
+            raise KeyError("Provide Key for Dict based metric results.")
+        assert isinstance(pl_result[key], Tensor)
     else:
         assert isinstance(pl_result, Tensor)
+
+
+def _assert_requires_grad(metric: Metric, pl_result: Any, key: Optional[str] = None) -> None:
+    """Utility function for recursively asserting that metric output is consistent with the `is_differentiable`
+    attribute."""
+    if isinstance(pl_result, Sequence):
+        for plr in pl_result:
+            _assert_requires_grad(metric, plr, key=key)
+    elif isinstance(pl_result, Dict):
+        if key is None:
+            raise KeyError("Provide Key for Dict based metric results.")
+        assert metric.is_differentiable == pl_result[key].requires_grad
+    else:
+        assert metric.is_differentiable == pl_result.requires_grad
 
 
 def _class_test(
@@ -81,13 +113,12 @@ def _class_test(
     check_dist_sync_on_step: bool = True,
     check_batch: bool = True,
     atol: float = 1e-8,
-    device: str = 'cpu',
+    device: str = "cpu",
     fragment_kwargs: bool = False,
     check_scriptable: bool = True,
     **kwargs_update: Any,
 ):
-    """Utility function doing the actual comparison between lightning class metric
-    and reference metric.
+    """Utility function doing the actual comparison between lightning class metric and reference metric.
 
     Args:
         rank: rank of current process
@@ -108,6 +139,9 @@ def _class_test(
         kwargs_update: Additional keyword arguments that will be passed with preds and
             target when running update on the metric.
     """
+    assert preds.shape[0] == target.shape[0]
+    num_batches = preds.shape[0]
+
     if not metric_args:
         metric_args = {}
 
@@ -130,7 +164,7 @@ def _class_test(
     pickled_metric = pickle.dumps(metric)
     metric = pickle.loads(pickled_metric)
 
-    for i in range(rank, NUM_BATCHES, worldsize):
+    for i in range(rank, num_batches, worldsize):
         batch_kwargs_update = {k: v[i] if isinstance(v, Tensor) else v for k, v in kwargs_update.items()}
 
         batch_result = metric(preds[i], target[i], **batch_kwargs_update)
@@ -154,14 +188,17 @@ def _class_test(
             sk_batch_result = sk_metric(preds[i].cpu(), target[i].cpu(), **batch_kwargs_update)
             _assert_allclose(batch_result, sk_batch_result, atol=atol)
 
+    # check that metrics are hashable
+    assert hash(metric)
+
     # check on all batches on all ranks
     result = metric.compute()
     _assert_tensor(result)
 
-    total_preds = torch.cat([preds[i] for i in range(NUM_BATCHES)]).cpu()
-    total_target = torch.cat([target[i] for i in range(NUM_BATCHES)]).cpu()
+    total_preds = torch.cat([preds[i] for i in range(num_batches)]).cpu()
+    total_target = torch.cat([target[i] for i in range(num_batches)]).cpu()
     total_kwargs_update = {
-        k: torch.cat([v[i] for i in range(NUM_BATCHES)]).cpu() if isinstance(v, Tensor) else v
+        k: torch.cat([v[i] for i in range(num_batches)]).cpu() if isinstance(v, Tensor) else v
         for k, v in kwargs_update.items()
     }
     sk_result = sk_metric(total_preds, total_target, **total_kwargs_update)
@@ -177,12 +214,11 @@ def _functional_test(
     sk_metric: Callable,
     metric_args: dict = None,
     atol: float = 1e-8,
-    device: str = 'cpu',
+    device: str = "cpu",
     fragment_kwargs: bool = False,
     **kwargs_update,
 ):
-    """Utility function doing the actual comparison between lightning functional metric
-    and reference metric.
+    """Utility function doing the actual comparison between lightning functional metric and reference metric.
 
     Args:
         preds: torch tensor with predictions
@@ -195,6 +231,9 @@ def _functional_test(
         kwargs_update: Additional keyword arguments that will be passed with preds and
             target when running update on the metric.
     """
+    assert preds.shape[0] == target.shape[0]
+    num_batches = preds.shape[0]
+
     if not metric_args:
         metric_args = {}
 
@@ -205,7 +244,7 @@ def _functional_test(
     target = target.to(device)
     kwargs_update = {k: v.to(device) if isinstance(v, Tensor) else v for k, v in kwargs_update.items()}
 
-    for i in range(NUM_BATCHES):
+    for i in range(num_batches):
         extra_kwargs = {k: v[i] if isinstance(v, Tensor) else v for k, v in kwargs_update.items()}
         lightning_result = metric(preds[i], target[i], **extra_kwargs)
         extra_kwargs = {
@@ -220,14 +259,13 @@ def _functional_test(
 
 def _assert_half_support(
     metric_module: Metric,
-    metric_functional: Callable,
+    metric_functional: Optional[Callable],
     preds: Tensor,
     target: Tensor,
     device: str = "cpu",
-    **kwargs_update
+    **kwargs_update,
 ):
-    """
-    Test if an metric can be used with half precision tensors
+    """Test if an metric can be used with half precision tensors.
 
     Args:
         metric_module: the metric module to test
@@ -246,24 +284,24 @@ def _assert_half_support(
     }
     metric_module = metric_module.to(device)
     _assert_tensor(metric_module(y_hat, y, **kwargs_update))
-    _assert_tensor(metric_functional(y_hat, y, **kwargs_update))
+    if metric_functional is not None:
+        _assert_tensor(metric_functional(y_hat, y, **kwargs_update))
 
 
 class MetricTester:
-    """Class used for efficiently run alot of parametrized tests in ddp mode.
-    Makes sure that ddp is only setup once and that pool of processes are
-    used for all tests.
+    """Class used for efficiently run alot of parametrized tests in ddp mode. Makes sure that ddp is only setup
+    once and that pool of processes are used for all tests.
 
-    All tests should subclass from this and implement a new method called
-        `test_metric_name`
-    where the method `self.run_metric_test` is called inside.
+    All tests should subclass from this and implement a new method called     `test_metric_name` where the method
+    `self.run_metric_test` is called inside.
     """
 
     atol = 1e-8
 
     def setup_class(self):
-        """Setup the metric class. This will spawn the pool of workers that are
-        used for metric testing and setup_ddp
+        """Setup the metric class.
+
+        This will spawn the pool of workers that are used for metric testing and setup_ddp
         """
 
         self.poolSize = NUM_PROCESSES
@@ -271,7 +309,7 @@ class MetricTester:
         self.pool.starmap(setup_ddp, [(rank, self.poolSize) for rank in range(self.poolSize)])
 
     def teardown_class(self):
-        """ Close pool of workers """
+        """Close pool of workers."""
         self.pool.close()
         self.pool.join()
 
@@ -285,8 +323,7 @@ class MetricTester:
         fragment_kwargs: bool = False,
         **kwargs_update,
     ):
-        """Main method that should be used for testing functions. Call this inside
-        testing method
+        """Main method that should be used for testing functions. Call this inside testing method.
 
         Args:
             preds: torch tensor with predictions
@@ -298,7 +335,7 @@ class MetricTester:
             kwargs_update: Additional keyword arguments that will be passed with preds and
                 target when running update on the metric.
         """
-        device = 'cuda' if (torch.cuda.is_available() and torch.cuda.device_count() > 0) else 'cpu'
+        device = "cuda" if (torch.cuda.is_available() and torch.cuda.device_count() > 0) else "cpu"
 
         _functional_test(
             preds=preds,
@@ -327,8 +364,7 @@ class MetricTester:
         check_scriptable: bool = True,
         **kwargs_update,
     ):
-        """Main method that should be used for testing class. Call this inside testing
-        methods.
+        """Main method that should be used for testing class. Call this inside testing methods.
 
         Args:
             ddp: bool, if running in ddp mode or not
@@ -372,7 +408,7 @@ class MetricTester:
                 [(rank, self.poolSize) for rank in range(self.poolSize)],
             )
         else:
-            device = 'cuda' if (torch.cuda.is_available() and torch.cuda.device_count() > 0) else 'cpu'
+            device = "cuda" if (torch.cuda.is_available() and torch.cuda.device_count() > 0) else "cpu"
 
             _class_test(
                 rank=0,
@@ -392,13 +428,13 @@ class MetricTester:
                 **kwargs_update,
             )
 
+    @staticmethod
     def run_precision_test_cpu(
-        self,
         preds: Tensor,
         target: Tensor,
         metric_module: Metric,
-        metric_functional: Callable,
-        metric_args: dict = None,
+        metric_functional: Optional[Callable] = None,
+        metric_args: Optional[dict] = None,
         **kwargs_update,
     ):
         """Test if a metric can be used with half precision tensors on cpu
@@ -416,13 +452,13 @@ class MetricTester:
             metric_module(**metric_args), metric_functional, preds, target, device="cpu", **kwargs_update
         )
 
+    @staticmethod
     def run_precision_test_gpu(
-        self,
         preds: Tensor,
         target: Tensor,
         metric_module: Metric,
-        metric_functional: Callable,
-        metric_args: dict = None,
+        metric_functional: Optional[Callable] = None,
+        metric_args: Optional[dict] = None,
         **kwargs_update,
     ):
         """Test if a metric can be used with half precision tensors on gpu
@@ -440,15 +476,15 @@ class MetricTester:
             metric_module(**metric_args), metric_functional, preds, target, device="cuda", **kwargs_update
         )
 
+    @staticmethod
     def run_differentiability_test(
-        self,
         preds: Tensor,
         target: Tensor,
         metric_module: Metric,
-        metric_functional: Callable,
-        metric_args: dict = None,
+        metric_functional: Optional[Callable] = None,
+        metric_args: Optional[dict] = None,
     ):
-        """Test if a metric is differentiable or not
+        """Test if a metric is differentiable or not.
 
         Args:
             preds: torch tensor with predictions
@@ -462,9 +498,11 @@ class MetricTester:
         if preds.is_floating_point():
             preds.requires_grad = True
             out = metric(preds[0], target[0])
-            assert metric.is_differentiable == out.requires_grad
 
-            if metric.is_differentiable:
+            # Check if requires_grad matches is_differentiable attribute
+            _assert_requires_grad(metric, out)
+
+            if metric.is_differentiable and metric_functional is not None:
                 # check for numerical correctness
                 assert torch.autograd.gradcheck(
                     partial(metric_functional, **metric_args), (preds[0].double(), target[0])
@@ -493,7 +531,7 @@ class DummyListMetric(Metric):
 
     def __init__(self):
         super().__init__()
-        self.add_state("x", list(), dist_reduce_fx=None)
+        self.add_state("x", [], dist_reduce_fx=None)
 
     def update(self):
         pass
@@ -503,7 +541,6 @@ class DummyListMetric(Metric):
 
 
 class DummyMetricSum(DummyMetric):
-
     def update(self, x):
         self.x += x
 
@@ -512,9 +549,13 @@ class DummyMetricSum(DummyMetric):
 
 
 class DummyMetricDiff(DummyMetric):
-
     def update(self, y):
         self.x -= y
 
     def compute(self):
         return self.x
+
+
+class DummyMetricMultiOutput(DummyMetricSum):
+    def compute(self):
+        return [self.x, self.x]

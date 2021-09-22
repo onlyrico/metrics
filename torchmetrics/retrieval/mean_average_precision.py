@@ -18,9 +18,7 @@ from torchmetrics.retrieval.retrieval_metric import RetrievalMetric
 
 
 class RetrievalMAP(RetrievalMetric):
-    """
-    Computes `Mean Average Precision
-    <https://en.wikipedia.org/wiki/Evaluation_measures_(information_retrieval)#Mean_average_precision>`__.
+    """Computes `Mean Average Precision`_.
 
     Works with binary target data. Accepts float predictions from a model output.
 
@@ -61,8 +59,8 @@ class RetrievalMAP(RetrievalMetric):
         >>> indexes = tensor([0, 0, 0, 1, 1, 1, 1])
         >>> preds = tensor([0.2, 0.3, 0.5, 0.1, 0.3, 0.5, 0.2])
         >>> target = tensor([False, False, True, False, True, False, True])
-        >>> map = RetrievalMAP()
-        >>> map(preds, target, indexes=indexes)
+        >>> rmap = RetrievalMAP()
+        >>> rmap(preds, target, indexes=indexes)
         tensor(0.7917)
     """
 

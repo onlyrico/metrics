@@ -26,12 +26,11 @@ def _stat_scores(
     class_index: int,
     argmax_dim: int = 1,
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-    """
-    Calculates the number of true positive, false positive, true negative
-    and false negative for a specific class
+    """Calculates the number of true positive, false positive, true negative and false negative for a specific
+    class.
 
     Args:
-        pred: prediction tensor
+        preds: prediction tensor
         target: target tensor
         class_index: class to calculate over
         argmax_dim: if pred is a tensor of probabilities, this indicates the
@@ -46,7 +45,6 @@ def _stat_scores(
         >>> tp, fp, tn, fn, sup = _stat_scores(x, y, class_index=1)
         >>> tp, fp, tn, fn, sup
         (tensor(0), tensor(1), tensor(2), tensor(0), tensor(0))
-
     """
     if preds.ndim == target.ndim + 1:
         preds = to_categorical(preds, argmax_dim=argmax_dim)
@@ -61,18 +59,17 @@ def _stat_scores(
 
 
 def dice_score(
-    pred: Tensor,
+    preds: Tensor,
     target: Tensor,
     bg: bool = False,
     nan_score: float = 0.0,
     no_fg_score: float = 0.0,
-    reduction: str = 'elementwise_mean',
+    reduction: str = "elementwise_mean",
 ) -> Tensor:
-    """
-    Compute dice score from prediction scores
+    """Compute dice score from prediction scores.
 
     Args:
-        pred: estimated probabilities
+        preds: estimated probabilities
         target: ground-truth labels
         bg: whether to also compute dice for the background
         nan_score: score to return, if a NaN occurs during computation
@@ -95,22 +92,21 @@ def dice_score(
         >>> target = torch.tensor([0, 1, 3, 2])
         >>> dice_score(pred, target)
         tensor(0.3333)
-
     """
-    num_classes = pred.shape[1]
-    bg = (1 - int(bool(bg)))
-    scores = torch.zeros(num_classes - bg, device=pred.device, dtype=torch.float32)
-    for i in range(bg, num_classes):
+    num_classes = preds.shape[1]
+    bg_inv = 1 - int(bg)
+    scores = torch.zeros(num_classes - bg_inv, device=preds.device, dtype=torch.float32)
+    for i in range(bg_inv, num_classes):
         if not (target == i).any():
             # no foreground class
-            scores[i - bg] += no_fg_score
+            scores[i - bg_inv] += no_fg_score
             continue
 
         # TODO: rewrite to use general `stat_scores`
-        tp, fp, tn, fn, sup = _stat_scores(preds=pred, target=target, class_index=i)
+        tp, fp, _, fn, _ = _stat_scores(preds=preds, target=target, class_index=i)
         denom = (2 * tp + fp + fn).to(torch.float)
         # nan result
         score_cls = (2 * tp).to(torch.float) / denom if torch.is_nonzero(denom) else nan_score
 
-        scores[i - bg] += score_cls
+        scores[i - bg_inv] += score_cls
     return reduce(scores, reduction=reduction)

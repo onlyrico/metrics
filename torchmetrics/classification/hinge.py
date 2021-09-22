@@ -21,7 +21,7 @@ from torchmetrics.metric import Metric
 
 class Hinge(Metric):
     r"""
-    Computes the mean `Hinge loss <https://en.wikipedia.org/wiki/Hinge_loss>`_, typically used for Support Vector
+    Computes the mean `Hinge loss`_, typically used for Support Vector
     Machines (SVMs). In the binary case it is defined as:
 
     .. math::
@@ -82,7 +82,10 @@ class Hinge(Metric):
         >>> hinge = Hinge(multiclass_mode="one-vs-all")
         >>> hinge(preds, target)
         tensor([2.2333, 1.5000, 1.2333])
+
     """
+    measure: Tensor
+    total: Tensor
 
     def __init__(
         self,
@@ -92,7 +95,7 @@ class Hinge(Metric):
         dist_sync_on_step: bool = False,
         process_group: Optional[Any] = None,
         dist_sync_fn: Callable = None,
-    ):
+    ) -> None:
         super().__init__(
             compute_on_step=compute_on_step,
             dist_sync_on_step=dist_sync_on_step,
@@ -113,7 +116,7 @@ class Hinge(Metric):
         self.squared = squared
         self.multiclass_mode = multiclass_mode
 
-    def update(self, preds: Tensor, target: Tensor):
+    def update(self, preds: Tensor, target: Tensor) -> None:  # type: ignore
         measure, total = _hinge_update(preds, target, squared=self.squared, multiclass_mode=self.multiclass_mode)
 
         self.measure = measure + self.measure
@@ -121,3 +124,7 @@ class Hinge(Metric):
 
     def compute(self) -> Tensor:
         return _hinge_compute(self.measure, self.total)
+
+    @property
+    def is_differentiable(self) -> bool:
+        return True

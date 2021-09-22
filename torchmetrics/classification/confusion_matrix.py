@@ -21,11 +21,11 @@ from torchmetrics.metric import Metric
 
 
 class ConfusionMatrix(Metric):
-    """
-    Computes the `confusion matrix
-    <https://scikit-learn.org/stable/modules/model_evaluation.html#confusion-matrix>`_.  Works with binary,
-    multiclass, and multilabel data.  Accepts probabilities from a model output or integer class values in prediction.
-    Works with multi-dimensional preds and target, but it should be noted that additional dimensions will be flattened.
+    r"""
+    Computes the `confusion matrix`_.  Works with binary,
+    multiclass, and multilabel data.  Accepts probabilities or logits from a model output or integer class
+    values in prediction. Works with multi-dimensional preds and target, but it should be noted that
+    additional dimensions will be flattened.
 
     Forward accepts
 
@@ -33,13 +33,12 @@ class ConfusionMatrix(Metric):
     - ``target`` (long tensor): ``(N, ...)``
 
     If preds and target are the same shape and preds is a float tensor, we use the ``self.threshold`` argument
-    to convert into integer labels. This is the case for binary and multi-label probabilities.
+    to convert into integer labels. This is the case for binary and multi-label probabilities or logits.
 
     If preds has an extra dimension as in the case of multi-class scores we perform an argmax on ``dim=1``.
 
     If working with multilabel data, setting the `is_multilabel` argument to `True` will make sure that a
-    `confusion matrix gets calculated per label
-    <https://scikit-learn.org/stable/modules/generated/sklearn.metrics.multilabel_confusion_matrix.html>`_.
+    `confusion matrix gets calculated per label`_.
 
     Args:
         num_classes: Number of classes in the dataset.
@@ -51,7 +50,9 @@ class ConfusionMatrix(Metric):
             - ``'all'``: normalization over the whole matrix
 
         threshold:
-            Threshold value for binary or multi-label probabilites. default: 0.5
+            Threshold for transforming probability or logit predictions to binary (0,1) predictions, in the case
+            of binary or multi-label inputs. Default value of 0.5 corresponds to input being probabilities.
+
         multilabel:
             determines if data is multilabel or not.
         compute_on_step:
@@ -88,7 +89,10 @@ class ConfusionMatrix(Metric):
         tensor([[[1., 0.], [0., 1.]],
                 [[1., 0.], [1., 0.]],
                 [[0., 1.], [0., 1.]]])
+
     """
+
+    confmat: Tensor
 
     def __init__(
         self,
@@ -99,8 +103,7 @@ class ConfusionMatrix(Metric):
         compute_on_step: bool = True,
         dist_sync_on_step: bool = False,
         process_group: Optional[Any] = None,
-    ):
-
+    ) -> None:
         super().__init__(
             compute_on_step=compute_on_step,
             dist_sync_on_step=dist_sync_on_step,
@@ -111,16 +114,15 @@ class ConfusionMatrix(Metric):
         self.threshold = threshold
         self.multilabel = multilabel
 
-        allowed_normalize = ('true', 'pred', 'all', 'none', None)
-        assert self.normalize in allowed_normalize, \
-            f"Argument average needs to one of the following: {allowed_normalize}"
+        allowed_normalize = ("true", "pred", "all", "none", None)
+        if self.normalize not in allowed_normalize:
+            raise ValueError(f"Argument average needs to one of the following: {allowed_normalize}")
 
         default = torch.zeros(num_classes, 2, 2) if multilabel else torch.zeros(num_classes, num_classes)
         self.add_state("confmat", default=default, dist_reduce_fx="sum")
 
-    def update(self, preds: Tensor, target: Tensor):
-        """
-        Update state with predictions and targets.
+    def update(self, preds: Tensor, target: Tensor) -> None:  # type: ignore
+        """Update state with predictions and targets.
 
         Args:
             preds: Predictions from model
@@ -130,11 +132,14 @@ class ConfusionMatrix(Metric):
         self.confmat += confmat
 
     def compute(self) -> Tensor:
-        """
-        Computes confusion matrix.
+        """Computes confusion matrix.
 
         Returns:
             If `multilabel=False` this will be a `[n_classes, n_classes]` tensor and if `multilabel=True`
             this will be a `[n_classes, 2, 2]` tensor
         """
         return _confusion_matrix_compute(self.confmat, self.normalize)
+
+    @property
+    def is_differentiable(self) -> bool:
+        return False
